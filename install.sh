@@ -20,11 +20,18 @@ chmod +x "$bindir/discord-panes"
 echo "plugin -> $plugins/PanePopout.plugin.js"
 echo "helper -> $bindir/discord-panes"
 
-# Keybinds: append once, after a backup.
-if [[ -f "$bindings" ]] && ! grep -q "discord-panes toggle" "$bindings"; then
-  cp "$bindings" "$bindings.bak.$(date +%s)"
-  { echo; cat "$here/hypr/bindings.lua"; } >> "$bindings"
-  echo "keybinds added to $bindings"
+# Keybinds: on a Lua-config Hyprland (e.g. Omarchy) append them once, after a backup.
+# Classic hyprland.conf setups get told what to add instead.
+if [[ -f "$bindings" ]] && grep -q "o\.bind" "$bindings"; then
+  if ! grep -q "discord-panes toggle" "$bindings"; then
+    cp "$bindings" "$bindings.bak.$(date +%s)"
+    { echo; cat "$here/hypr/bindings.lua"; } >> "$bindings"
+    echo "keybinds added to $bindings"
+  fi
+elif ! grep -rqs "discord-panes toggle" "$config/hypr/"; then
+  echo
+  echo "Add these keybinds to your hyprland.conf:"
+  grep -v '^#' "$here/hypr/hyprland.conf"
 fi
 if command -v hyprctl >/dev/null; then
   hyprctl reload >/dev/null

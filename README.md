@@ -1,8 +1,9 @@
 # discord-panes
 
-Splits Discord into Hyprland windows that match the panes of the
-[system24](https://github.com/refact0r/system24) theme, so Discord tiles and
-navigates like the rest of Omarchy:
+A [BetterDiscord](https://betterdiscord.app) plugin plus a small
+[Hyprland](https://hypr.land) helper that splits Discord into real tiled windows,
+laid out like the panes of the [system24](https://github.com/refact0r/system24)
+theme:
 
 ```
 nav | channels | channel
@@ -10,62 +11,108 @@ nav | channels | channel
     | user     |  input
 ```
 
-- **nav**, **channels** and **user** are their own tiled windows, drawn by the
-  plugin from Discord's own data (servers, folders, unread and mention badges,
-  categories, joined threads, DMs, presence, mute/deafen).
+- **nav**, **channels** and **user** become their own Hyprland windows, drawn by
+  the plugin from Discord's own data: servers and folders, unread and mention
+  badges, channel categories, joined threads, DMs with presence, mute and deafen.
 - The main Discord window stays as channel + chat + input, so Discord's real
   message box, menus and dialogs keep working.
-- Colours and font follow the current Omarchy theme (toggle in the plugin's
-  settings), and update live when the Omarchy theme changes.
-- Everything is keyboard driven; the friends page in the main window is too.
+- Move between panes with your usual Hyprland focus keys; inside a pane,
+  everything is driven by plain keys (`j`/`k`, Enter, `/`, ...). The friends page
+  in the main window is keyboard-driven too.
+- The panes copy your Discord theme's colours. On [Omarchy](https://omarchy.org),
+  Discord can follow the Omarchy theme instead, live.
+
+## Requirements
+
+- Linux with Hyprland (the helper places and focuses windows with `hyprctl`).
+  Developed on Hyprland 0.56 with the Lua config (Omarchy). Classic
+  `hyprland.conf` setups are supported by the helper but less tested.
+- Discord with BetterDiscord.
+- Python 3 for the helper.
+- Optional: the system24 theme (the panes are styled after it, but work
+  without it), Omarchy (for theme following), `notify-send`.
 
 ## Install
 
 ```sh
+git clone https://github.com/yoboogs/discord-panes
+cd discord-panes
 ./install.sh
 ```
 
-Then, the first time only, enable **PanePopout** in Discord under
-Settings > Plugins. Re-run `./install.sh` after changing anything here.
+`install.sh` copies the plugin into `~/.config/BetterDiscord/plugins/` and the
+helper to `~/.local/bin/discord-panes`, adds the keybinds (Lua-config Hyprland)
+or prints them for your `hyprland.conf` (classic), and starts the helper.
+
+Then enable **PanePopout** in Discord under Settings > Plugins and press
+`SUPER ALT D`.
+
+Manual install: put `plugin/PanePopout.plugin.js` in your BetterDiscord plugins
+folder, `bin/discord-panes` somewhere on your `PATH`, and bind
+`discord-panes toggle` and `discord-panes help` to keys (see `hypr/`).
+
+To start the helper at login (so the in-Discord `split` button works before
+you've used a keybind), run `discord-panes daemon` from your Hyprland autostart.
 
 ## Keys
 
 | key | does |
 | --- | --- |
 | `SUPER ALT D` | split Discord into panes / put it back together |
-| `SUPER ALT SHIFT D` | show / hide the help (or `?` in any pane) |
-| `SUPER` + arrows | move between panes (Omarchy) |
-| `SUPER W` | close a pane, which ends the split |
-| `j` `k`, `g` `G`, `enter`, `esc` | move, jump, open, back to chat (in panes) |
+| `SUPER ALT SHIFT D` | show / hide the help window (`?` in any pane too) |
+| your focus keys | move between panes |
+| close window | closing any pane puts Discord back together |
+| `j` `k`, `g` `G` | move, jump to top / bottom (in panes) |
+| Enter, `l` | open the server / channel / DM under the cursor |
+| `/` | filter channels or DMs |
+| `esc` | back to the chat input |
+| `m` `d` `s` | mute, deafen, settings (user pane) |
 
-The help window lists every key, per pane.
+The help window lists every key per pane, including the friends page. The
+`SUPER ALT ...` binds are only defaults; change them in your Hyprland config.
 
-## How it fits together
+## Settings
 
-- `plugin/PanePopout.plugin.js`: the BetterDiscord plugin. It opens the pane
-  windows, draws them, reads Discord's stores and navigates.
-- `bin/discord-panes`: the Hyprland side. It tiles the panes, resizes them,
-  moves focus and handles the keybinds, using `hyprctl`.
-- They talk through small JSON files in `$XDG_RUNTIME_DIR/discord-panes/`,
-  because BetterDiscord plugins can't run programs or open sockets. Messages
-  are fixed actions (open, dock, focus, geometry, help, diag); nothing that
-  arrives there is executed as code.
-- `discord-panes diag` prints a read-only report from the plugin (which Discord
-  internals it found, pane sizes, theme values).
+Discord > Settings > Plugins > PanePopout: **Follow the Omarchy theme** (on by
+default) maps the current Omarchy theme's colours and monospace font onto your
+Discord theme. Without Omarchy installed it does nothing.
 
-## Things worth knowing
+## How it works
 
-- Discord won't let a popout window render smaller than 320x200, so panes that
-  Hyprland tiles narrower are laid out for their real size (the helper sends
-  it). The user pane is 200px tall for this reason.
+- `plugin/PanePopout.plugin.js` opens the pane windows (as Discord popouts),
+  draws them, reads Discord's state through BetterDiscord's official Webpack
+  API, and navigates.
+- `bin/discord-panes` is the Hyprland side: it tiles the panes, sizes them,
+  moves focus and answers the keybinds.
+- BetterDiscord plugins can't run programs or open sockets, so the two exchange
+  small JSON messages through files in `$XDG_RUNTIME_DIR/discord-panes/`
+  (a private, per-user directory). Messages are a fixed set of actions (open,
+  dock, focus, geometry, help, diag); nothing received there is run as code.
+- `discord-panes diag` prints a read-only health report from the plugin: which
+  Discord internals it found, counts, pane sizes and theme values. It contains no
+  names, IDs or messages.
+
+The plugin makes no network requests of its own beyond loading server icons and
+avatars from Discord's CDN, and stores only its own UI state (collapsed
+categories, open folders, the theme setting) via BetterDiscord.
+
+## Known limits
+
+- Discord won't render a popout smaller than 320x200, so narrower or shorter
+  tiles are laid out for their real size, and the user pane is 200px tall.
+- Each pane loads Discord's popout page, which costs some memory.
 - BetterDiscord disables a plugin whose file is replaced by a rename (how most
-  editors save). Write the installed plugin in place, as `install.sh` does.
-- Each pane loads Discord's popout page in the background, so the panes cost
-  some extra memory.
-- The helper isn't started at login. A keybind starts it on first use; to have
-  the in-Discord `split` button work before that, add to
-  `~/.config/hypr/autostart.lua`:
+  editors save). `install.sh` writes the file in place to avoid that.
+- Discord changes its internals often; if a pane stops updating, check
+  `discord-panes diag` and open an issue.
 
-  ```lua
-  o.exec_on_start(os.getenv("HOME") .. "/.local/bin/discord-panes daemon")
-  ```
+## About this project
+
+Built with AI assistance (Anthropic's Claude), designed and tested by
+[yoboogs](https://github.com/yoboogs). Because of that it isn't submitted to the
+official BetterDiscord addon store, whose guidelines require plugins to be
+written primarily by their author.
+
+## License
+
+[MIT](LICENSE)

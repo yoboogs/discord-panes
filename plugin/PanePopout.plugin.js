@@ -1,8 +1,11 @@
 /**
  * @name PanePopout
- * @author dylan
- * @description Splits Discord into Hyprland windows that match system24's panes: nav, channels and user become their own tiled windows beside the main channel/chat/input window. Pair with the `discord-panes` helper for tiling, focus and keybinds.
- * @version 0.3.0
+ * @author yoboogs
+ * @authorLink https://github.com/yoboogs
+ * @description Splits Discord into tiled Hyprland windows (nav, channels, user) beside the main chat window, keyboard-driven, styled like the system24 theme and optionally following the Omarchy theme. Needs Hyprland and the discord-panes helper from the source repo.
+ * @version 1.0.0
+ * @source https://github.com/yoboogs/discord-panes
+ * @website https://github.com/yoboogs/discord-panes
  */
 
 const fs = require("fs");
@@ -214,6 +217,7 @@ module.exports = class PanePopout {
     post(TO_HYPR, { action: "docked" });
     clearInterval(this.poller);
     clearInterval(this.themeTimer);
+    clearTimeout(this.renderTimer); this.renderTimer = null;
     try { this.watcher?.close(); } catch (e) {}
     this.unsubscribe?.();
     this.splitBtn?.remove();
@@ -270,82 +274,40 @@ module.exports = class PanePopout {
       safe(() => W.getModule((m) => typeof m === "function" && String(m).includes("transitionTo - Transitioning to"), { searchExports: true }), null);
   }
 
-  // Read-only health report for debugging: which internals were found, plus counts.
+  // Read-only health report for `discord-panes diag`: which Discord internals were found,
+  // counts, pane sizes and theme values. No names, IDs or message content are recorded.
   writeDiag() {
     const S = this.S;
-    const methods = {
-      "SortedGuild.getGuildFolders": typeof S.SortedGuild?.getGuildFolders,
-      "SelectedChannel.getMostRecentSelectedTextChannelId": typeof S.SelectedChannel?.getMostRecentSelectedTextChannelId,
-      "SelectedChannel.getLastSelectedChannelId": typeof S.SelectedChannel?.getLastSelectedChannelId,
-      "GuildChannel.getChannels": typeof S.GuildChannel?.getChannels,
-      "PrivateSort.getPrivateChannelIds": typeof S.PrivateSort?.getPrivateChannelIds,
-      "Channel.getSortedPrivateChannels": typeof S.Channel?.getSortedPrivateChannels,
-      "Threads.getActiveJoinedThreadsForGuild": typeof S.Threads?.getActiveJoinedThreadsForGuild,
-      "GuildReadState.getMentionCount": typeof S.GuildReadState?.getMentionCount,
-      "Media.isSelfMute": typeof S.Media?.isSelfMute,
-      "RTC.getChannelId": typeof S.RTC?.getChannelId,
-    };
-    const gid = safe(() => S.SelectedGuild.getGuildId(), null);
-    const chans = gid ? safe(() => S.GuildChannel.getChannels(gid), {}) : {};
-    const panel = document.querySelector('section[class*="panels_"]');
+    const methods = [
+      ["SortedGuild", "getGuildFolders"], ["SelectedChannel", "getMostRecentSelectedTextChannelId"],
+      ["GuildChannel", "getChannels"], ["PrivateSort", "getPrivateChannelIds"],
+      ["Threads", "getActiveJoinedThreadsForGuild"], ["GuildReadState", "getMentionCount"],
+      ["Media", "isSelfMute"], ["RTC", "getChannelId"],
+    ];
+    const cs = getComputedStyle(document.body);
     const diag = {
+      version: "1.0.0",
       time: new Date().toISOString(),
       stores: Object.fromEntries(Object.entries(S).map(([k, v]) => [k, !!v])),
       transitionTo: typeof this.transitionTo,
-      methods,
+      methods: Object.fromEntries(methods.map(([st, m]) => [`${st}.${m}`, typeof S[st]?.[m]])),
       counts: {
+        guilds: safe(() => S.Guild.getGuildCount(), null),
         folders: safe(() => S.SortedGuild.getGuildFolders().length, null),
-        guildsInStore: safe(() => Object.keys(S.Guild.getGuilds()).length, null),
-        guildCount: safe(() => S.Guild.getGuildCount(), null),
-        flattenedGuildIds: safe(() => S.SortedGuild.getFlattenedGuildIds().length, null),
-        guildIdsInFolders: safe(() => S.SortedGuild.getGuildFolders().reduce((n, f) => n + (f.guildIds || []).length, 0), null),
-        foldersWithoutGuildInStore: safe(() => S.SortedGuild.getGuildFolders().flatMap((f) => f.guildIds || []).filter((id) => !S.Guild.getGuild(id)).length, null),
         privateChannels: this.privateChannelIds().length,
-        selectedGuildChannelKeys: Object.keys(chans || {}),
-        selectable: (chans?.SELECTABLE || []).length, vocal: (chans?.VOCAL || []).length,
-        categories: (chans?.[CHANNEL.CATEGORY] || []).length,
       },
-      panelButtons: [...(panel?.querySelectorAll("button, [role=switch], [role=button]") || [])].map((b) => b.getAttribute("aria-label")),
+      userPanelButtonsFound: ["mute", "deafen", "settings"].map((n) => [n, !!this.findPanelButton({ mute: /^(un)?mute$/i, deafen: /^(un)?deafen$/i, settings: /user settings/i }[n])]),
+      friendsPage: { open: !!document.querySelector('[class*="peopleColumn_"]') },
       split: Object.keys(this.wins),
-      friends: (() => {
-        const col = document.querySelector('[class*="peopleColumn_"]');
-        const rows = col ? [...col.querySelectorAll('[class*="peopleListItem_"]')] : [];
-        const info = (el) => ({ tag: el.tagName, cls: String(el.getAttribute("class") || "").slice(0, 90), role: el.getAttribute("role"),
-          tabindex: el.getAttribute("tabindex"), dataId: el.getAttribute("data-list-item-id"), aria: el.getAttribute("aria-label") });
-        return {
-          path: location.pathname,
-          tabs: [...document.querySelectorAll('[role="tablist"] [role="tab"]')].map((t) => ({ ...info(t), text: t.textContent.trim().slice(0, 24), selected: t.getAttribute("aria-selected") })),
-          hasColumn: !!col, rowCount: rows.length,
-          rows: rows.slice(0, 2).map((r) => ({ ...info(r), parents: [r.parentElement, r.parentElement?.parentElement].map((x) => x && info(x)),
-            buttons: [...r.querySelectorAll("[aria-label], [role=button], button")].map((b) => ({ tag: b.tagName, aria: b.getAttribute("aria-label"), role: b.getAttribute("role") })) })),
-          search: col ? [...col.querySelectorAll("input")].map((i) => ({ placeholder: i.placeholder, aria: i.getAttribute("aria-label") })) : [],
-          scroller: col ? info(col.querySelector('[class*="scroller"]') || col) : null,
-        };
-      })(),
-      theme: (() => {
-        const cs = getComputedStyle(document.body);
-        const pick = ["--bg-4", "--bg-3", "--text-3", "--accent-2", "--border-hover", "--red-2", "--background-base-low", "--text-normal"];
-        return { followOmarchy: this.followOmarchy, omarchyStyle: !!document.getElementById("PanePopout-omarchy") || !!document.querySelector("#PanePopout-omarchy, [id*='PanePopout-omarchy']"),
-          vars: Object.fromEntries(pick.map((v) => [v, cs.getPropertyValue(v).trim()])), bodyFont: cs.fontFamily, bodyWeight: cs.fontWeight,
-          chatBg: (() => { const el = document.querySelector('[class*="messagesWrapper_"]'); return el ? getComputedStyle(el).backgroundColor : null; })() };
-      })(),
       panes: Object.fromEntries(Object.entries(this.wins).map(([k, w]) => [k, w.doc ? {
-        items: (this.items[k] || []).length,
-        window: [w.win.innerWidth, w.win.innerHeight],
+        rows: (this.items[k] || []).length, tile: this.geom[k] || null, page: [w.win.innerWidth, w.win.innerHeight],
         box: w.box ? [w.box.clientWidth, w.box.clientHeight] : null,
-        list: [w.list.clientWidth, w.list.clientHeight, w.list.scrollHeight],
-        listDisplay: w.doc.defaultView.getComputedStyle(w.list).display,
-        firstRow: (() => { const r = w.list.querySelector("[data-i]"); if (!r) return null; const b = r.getBoundingClientRect(); const cs = w.doc.defaultView.getComputedStyle(r); return { rect: [b.x, b.y, b.width, b.height], display: cs.display, visibility: cs.visibility, opacity: cs.opacity }; })(),
-        html: w.list.innerHTML.slice(0, 500),
-        geom: this.geom[k] || null,
-        rows: k !== "nav" ? undefined : [...w.list.querySelectorAll(".srv")].map((el) => {
-          const v = w.doc.defaultView, b = el.getBoundingClientRect(), before = v.getComputedStyle(el, "::before");
-          return { title: el.title, inFolder: !!el.closest(".folder"), cls: el.className.trim(), cursor: el.hasAttribute("data-cursor"),
-            rect: [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)],
-            bar: { h: before.height, left: before.left, top: before.top, bg: before.backgroundColor } };
-        }),
-        selectedGuild: k === "nav" ? safe(() => this.S.SelectedGuild.getGuildId(), null) : undefined,
       } : { loading: true }])),
+      theme: {
+        followOmarchy: this.followOmarchy, omarchyFound: !!readOmarchy(),
+        vars: Object.fromEntries(["--bg-4", "--text-3", "--accent-2", "--border-hover"].map((v) => [v, cs.getPropertyValue(v).trim()])),
+        font: cs.fontFamily,
+      },
     };
     try { fs.writeFileSync(DIAG_FILE, JSON.stringify(diag, null, 1)); } catch (e) { console.warn("[PanePopout] diag failed", e); }
   }
@@ -788,10 +750,14 @@ module.exports = class PanePopout {
 
   // Click the real (hidden) control in the main window's user panel, so Discord does
   // exactly what it normally does.
-  clickPanelButton(re) {
+  findPanelButton(re) {
     const panel = document.querySelector('section[class*="panels_"]');
-    const btn = [...(panel?.querySelectorAll("button, [role=switch], [role=button]") || [])]
+    return [...(panel?.querySelectorAll("button, [role=switch], [role=button]") || [])]
       .find((b) => re.test(b.getAttribute("aria-label") || ""));
+  }
+
+  clickPanelButton(re) {
+    const btn = this.findPanelButton(re);
     if (btn) { btn.click(); return true; }
     BdApi.UI.showToast("PanePopout: couldn't find that button in Discord's user panel", { type: "error" });
     return false;

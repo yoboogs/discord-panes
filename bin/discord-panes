@@ -82,10 +82,30 @@ def hyprctl(*args):
     return subprocess.run(["hyprctl", *args], capture_output=True, text=True).stdout
 
 
-def dispatch(lua):
-    out = hyprctl("dispatch", lua).strip()
-    if out and out != "ok":
-        log(f"dispatch {lua!r}: {out}")
+_lua_dispatch = None  # Hyprland with the Lua config (e.g. Omarchy) wants hl.dsp.* calls; classic Hyprland doesn't
+
+
+def dispatch(lua, *classic):
+    """Run a dispatcher: the Lua form on Lua-config Hyprland, the classic one otherwise."""
+    global _lua_dispatch
+    if _lua_dispatch is not False:
+        out = hyprctl("dispatch", lua).strip()
+        if not out or out == "ok":
+            _lua_dispatch = True
+            return
+        # Lua-config Hyprland reports Lua errors (mentioning hl.* / lua); classic Hyprland
+        # just doesn't know a dispatcher called "hl.dsp...". Only the latter means "use classic".
+        if _lua_dispatch is None and classic and "lua" not in out.lower() and "hl." not in out:
+            _lua_dispatch = False
+        else:
+            if "lua" in out.lower() or "hl." in out:
+                _lua_dispatch = True
+            log(f"dispatch {lua!r}: {out}")
+            return
+    if classic:
+        out = hyprctl("dispatch", *classic).strip()
+        if out and out != "ok":
+            log(f"dispatch {' '.join(classic)!r}: {out}")
 
 
 def clients():
@@ -96,19 +116,23 @@ def clients():
 
 
 def focus(addr):
-    dispatch(f'hl.dsp.focus({{ window = "address:{addr}" }})')
+    dispatch(f'hl.dsp.focus({{ window = "address:{addr}" }})', "focuswindow", f"address:{addr}")
 
 
 def preselect(direction):
-    dispatch(f'hl.dsp.layout("preselect {direction}")')
+    dispatch(f'hl.dsp.layout("preselect {direction}")', "layoutmsg", f"preselect {direction}")
 
 
 def resize(addr, w, h):
-    dispatch(f'hl.dsp.window.resize({{ window = "address:{addr}", x = {int(w)}, y = {int(h)} }})')
+    dispatch(f'hl.dsp.window.resize({{ window = "address:{addr}", x = {int(w)}, y = {int(h)} }})',
+             "resizewindowpixel", f"exact {int(w)} {int(h)},address:{addr}")
 
 
 def notify(text):
-    subprocess.run(["notify-send", "-a", "Discord panes", "Discord panes", text], capture_output=True)
+    try:
+        subprocess.run(["notify-send", "-a", "Discord panes", "Discord panes", text], capture_output=True)
+    except FileNotFoundError:
+        log(text)
 
 
 def log(text):
@@ -291,14 +315,15 @@ def toggle_help(state):
             if c.get("class") == "discord" and c["address"] not in before:
                 addr = c["address"]
                 if not c.get("floating"):
-                    dispatch(f'hl.dsp.window.float({{ window = "address:{addr}", action = "toggle" }})')
+                    dispatch(f'hl.dsp.window.float({{ window = "address:{addr}", action = "toggle" }})',
+                             "setfloating", f"address:{addr}")
                 break
     if not addr:
         notify("couldn't open the help; is the PanePopout plugin enabled?")
         return
     resize(addr, *HELP_SIZE)
-    dispatch(f'hl.dsp.window.center({{ window = "address:{addr}" }})')
-    focus(addr)
+    focus(addr)  # classic centerwindow acts on the focused window
+    dispatch(f'hl.dsp.window.center({{ window = "address:{addr}" }})', "centerwindow")
     state["help"] = addr
     save_state(state)
 
@@ -320,9 +345,15 @@ def daemon():
         return
     with open(PIDFILE, "w") as f:
         f.write(str(os.getpid()))
-    # drop requests queued while nothing was listening
-    for _ in take(TO_HYPR):
-        pass
+    # drop stale requests queued while nothing was listening (keep ones from the last few
+    # seconds, e.g. the plugin re-splitting while the helper restarts)
+    now_ms = time.time_ns() // 1_000_000
+    for name in os.listdir(TO_HYPR):
+        try:
+            if now_ms - int(name.lstrip(".").split("-")[0]) > 5000:
+                os.unlink(os.path.join(TO_HYPR, name))
+        except (ValueError, OSError):
+            pass
     last_geo_check = 0.0
     try:
         while True:
