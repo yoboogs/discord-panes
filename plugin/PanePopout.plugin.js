@@ -3,7 +3,7 @@
  * @author yoboogs
  * @authorLink https://github.com/yoboogs
  * @description Splits Discord into tiled Hyprland windows (nav, channels, user) beside the main chat window, keyboard-driven, styled like the system24 theme and optionally following the Omarchy theme. Needs Hyprland and the discord-panes helper from the source repo.
- * @version 1.0.0
+ * @version 1.1.0
  * @source https://github.com/yoboogs/discord-panes
  * @website https://github.com/yoboogs/discord-panes
  */
@@ -32,6 +32,117 @@ const THEME_VARS = [
   "--label-color", "--label-hover-color", "--label-font-weight", "--background-base-low", "--background-base-lower",
   "--text-muted", "--text-normal", "--brand-360", "--border-hover-transition", "--list-item-transition", "--red-2",
 ];
+
+// Without a palette theme (system24, midnight, ...) the palette variables above don't exist,
+// so the panes take Discord's own colours instead: first variable found wins.
+const NATIVE_FALLBACK = {
+  "--bg-4": ["--background-base-low", "--background-primary"],
+  "--bg-3": ["--background-base-lowest", "--background-tertiary"],
+  "--bg-2": ["--background-mod-normal", "--background-secondary"],
+  "--bg-1": ["--background-mod-strong", "--background-modifier-selected"],
+  "--text-0": ["--badge-text-default", "--white"],
+  "--text-1": ["--text-strong", "--header-primary"],
+  "--text-2": ["--text-strong", "--header-primary"],
+  "--text-3": ["--text-default", "--text-normal"],
+  "--text-4": ["--channels-default", "--interactive-normal", "--text-subtle"],
+  "--text-5": ["--text-muted"],
+  "--hover": ["--background-mod-subtle", "--background-modifier-hover"],
+  "--active": ["--background-mod-normal", "--background-modifier-selected"],
+  "--border": ["--border-subtle", "--border-normal"],
+  "--border-light": ["--border-muted", "--border-subtle"],
+  "--border-hover": ["--border-strong", "--text-muted"],
+  "--accent-1": ["--text-brand", "--brand-500"],
+  "--accent-2": ["--text-brand", "--brand-500"],
+  "--accent-3": ["--text-brand", "--brand-500"],
+  "--accent-new": ["--status-danger", "--red-400"],
+  "--online": ["--status-online", "--green-360"],
+  "--idle": ["--status-warning", "--yellow-300"],
+  "--dnd": ["--status-danger", "--red-400"],
+  "--offline": ["--text-muted"],
+};
+
+// Discord's own colour variables, expressed in the palette. Following Omarchy without a palette
+// theme, this is what recolours the main window (a palette theme does this mapping itself).
+const NATIVE_MAP = [
+  // surfaces
+  ["--background-base-lowest", "var(--bg-4)"], ["--background-base-lower", "var(--bg-4)"], ["--background-base-low", "var(--bg-4)"],
+  ["--background-primary", "var(--bg-4)"], ["--background-secondary", "var(--bg-4)"], ["--background-tertiary", "var(--bg-4)"],
+  ["--background-secondary-alt", "var(--bg-3)"], ["--background-accent", "var(--bg-2)"], ["--background-floating", "var(--bg-3)"],
+  ["--background-surface-high", "var(--bg-3)"], ["--background-surface-higher", "var(--bg-3)"], ["--background-surface-highest", "var(--bg-3)"],
+  ["--bg-surface-raised", "var(--bg-3)"], ["--bg-surface-overlay", "var(--bg-3)"], ["--card-background-default", "var(--bg-3)"],
+  ["--chat-background-default", "var(--bg-4)"], ["--home-background", "var(--bg-4)"], ["--background-code", "var(--bg-3)"],
+  ["--app-frame-background", "var(--bg-3)"], ["--app-frame-border", "var(--border)"],
+  ["--modal-background", "var(--bg-4)"], ["--modal-footer-background", "var(--bg-3)"],
+  ["--background-mod-subtle", "var(--hover)"], ["--background-mod-muted", "var(--hover)"],
+  ["--background-mod-normal", "var(--bg-2)"], ["--background-mod-strong", "var(--bg-1)"],
+  ["--background-modifier-hover", "var(--hover)"], ["--background-modifier-selected", "var(--active)"],
+  ["--background-modifier-active", "var(--active)"], ["--background-modifier-accent", "var(--border-light)"],
+  ["--interactive-background-hover", "var(--hover)"], ["--interactive-background-active", "var(--active)"],
+  ["--interactive-background-selected", "var(--active)"],
+  ["--message-background-hover", "var(--message-hover)"], ["--background-message-hover", "var(--message-hover)"],
+  ["--user-profile-overlay-background", "var(--bg-4)"], ["--user-profile-toolbar-background", "var(--bg-3)"],
+  ["--user-profile-border", "var(--border)"],
+  // input
+  ["--channeltextarea-background", "var(--bg-3)"], ["--input-background-default", "var(--bg-3)"],
+  ["--input-border-default", "var(--border-light)"], ["--input-border-hover", "var(--border)"], ["--input-border-active", "var(--accent-2)"],
+  ["--input-text-default", "var(--text-3)"], ["--input-placeholder-text-default", "var(--text-5)"],
+  ["--channel-text-area-placeholder", "var(--text-5)"],
+  ["--scrollbar-auto-thumb", "var(--bg-1)"], ["--scrollbar-auto-track", "transparent"],
+  ["--scrollbar-thin-thumb", "var(--bg-1)"], ["--scrollbar-thin-track", "transparent"],
+  // borders
+  ["--border-subtle", "var(--border)"], ["--border-normal", "var(--border)"], ["--border-strong", "var(--border)"],
+  ["--border-muted", "var(--border-light)"], ["--border-focus", "var(--border-hover)"],
+  // text and icons
+  ["--text-default", "var(--text-3)"], ["--text-normal", "var(--text-3)"], ["--text-strong", "var(--text-2)"],
+  ["--header-primary", "var(--text-2)"], ["--header-secondary", "var(--text-4)"], ["--text-subtle", "var(--text-4)"],
+  ["--text-muted", "var(--text-5)"], ["--chat-text-muted", "var(--text-5)"], ["--text-link", "var(--accent-1)"],
+  ["--text-brand", "var(--accent-1)"], ["--channels-default", "var(--text-4)"], ["--channel-icon", "var(--text-4)"],
+  ["--textbox-markdown-syntax", "var(--text-4)"],
+  ["--text-feedback-critical", "var(--red-1)"], ["--text-feedback-positive", "var(--green-1)"],
+  ["--text-feedback-warning", "var(--yellow-1)"], ["--text-feedback-info", "var(--accent-1)"],
+  ["--icon-default", "var(--text-4)"], ["--icon-strong", "var(--text-3)"], ["--icon-subtle", "var(--text-4)"],
+  ["--icon-muted", "var(--text-5)"], ["--icon-link", "var(--text-4)"],
+  ["--interactive-normal", "var(--text-4)"], ["--interactive-hover", "var(--text-3)"],
+  ["--interactive-active", "var(--text-2)"], ["--interactive-muted", "var(--text-5)"],
+  ["--interactive-icon-default", "var(--text-4)"], ["--interactive-icon-hover", "var(--text-3)"], ["--interactive-icon-active", "var(--text-3)"],
+  ["--interactive-text-default", "var(--text-4)"], ["--interactive-text-hover", "var(--text-3)"], ["--interactive-text-active", "var(--text-2)"],
+  // accent, buttons, badges
+  ["--brand-260", "var(--accent-1)"], ["--brand-360", "var(--accent-2)"], ["--brand-500", "var(--accent-2)"],
+  ["--background-brand", "var(--accent-2)"], ["--control-brand-foreground", "var(--accent-2)"],
+  ["--control-primary-background-default", "var(--accent-3)"], ["--control-primary-background-hover", "var(--accent-4)"],
+  ["--control-primary-background-active", "var(--accent-5)"],
+  ["--control-primary-text-default", "var(--text-0)"], ["--control-primary-text-hover", "var(--text-0)"], ["--control-primary-text-active", "var(--text-0)"],
+  ["--control-primary-icon-default", "var(--text-0)"], ["--control-primary-icon-hover", "var(--text-0)"], ["--control-primary-icon-active", "var(--text-0)"],
+  ["--control-secondary-background-default", "var(--bg-2)"], ["--control-secondary-background-hover", "var(--bg-1)"],
+  ["--control-secondary-background-active", "var(--bg-1)"],
+  ["--control-secondary-text-default", "var(--text-3)"], ["--control-secondary-text-hover", "var(--text-2)"], ["--control-secondary-text-active", "var(--text-2)"],
+  ["--control-secondary-icon-default", "var(--text-3)"], ["--control-secondary-icon-hover", "var(--text-2)"], ["--control-secondary-icon-active", "var(--text-2)"],
+  ["--badge-background-default", "var(--accent-2)"], ["--badge-notification-background", "var(--accent-new)"],
+  ["--badge-text-default", "var(--text-0)"], ["--background-feedback-notification", "var(--accent-new)"],
+  ["--mention-background", "color-mix(in oklab, var(--accent-2), transparent 85%)"], ["--mention-foreground", "var(--accent-1)"],
+  ["--message-mentioned-background-default", "color-mix(in oklab, var(--accent-2), transparent 92%)"],
+  ["--message-mentioned-background-hover", "color-mix(in oklab, var(--accent-2), transparent 88%)"],
+  ["--message-highlight-background-default", "color-mix(in oklab, var(--text-3), transparent 92%)"],
+  ["--message-highlight-background-hover", "color-mix(in oklab, var(--text-3), transparent 88%)"],
+  ["--reaction-background-default", "var(--hover)"], ["--reaction-background-hover", "var(--active)"],
+  ["--reaction-background-reacted-default", "color-mix(in oklab, var(--accent-2), transparent 80%)"],
+  ["--reaction-border-reacted-default", "var(--accent-2)"], ["--reaction-text-default", "var(--text-3)"],
+  ["--switch-background-default", "var(--bg-2)"], ["--switch-background-selected-default", "var(--accent-2)"],
+  ["--checkbox-background-selected-default", "var(--accent-2)"], ["--radio-background-selected-default", "var(--accent-2)"],
+  // status
+  ["--status-online", "var(--online)"], ["--status-positive", "var(--green-2)"], ["--status-speaking", "var(--green-2)"],
+  ["--status-danger", "var(--red-2)"], ["--status-warning", "var(--yellow-2)"],
+  ["--icon-status-online", "var(--online)"], ["--icon-status-idle", "var(--idle)"], ["--icon-status-dnd", "var(--dnd)"],
+  ["--icon-status-offline", "var(--offline)"], ["--text-status-online", "var(--online)"], ["--text-status-idle", "var(--idle)"],
+  ["--text-status-dnd", "var(--dnd)"], ["--text-status-offline", "var(--offline)"], ["--icon-voice-muted", "var(--accent-new)"],
+  ["--red-400", "var(--red-2)"], ["--red-500", "var(--red-3)"], ["--green-360", "var(--green-2)"], ["--yellow-300", "var(--yellow-2)"],
+  // fonts
+  ["--font-primary", "var(--font), 'gg sans', 'Noto Sans', sans-serif"], ["--font-display", "var(--font), 'gg sans', 'Noto Sans', sans-serif"],
+  ["--font-code", "var(--code-font), 'gg mono', monospace"],
+];
+// Discord redefines its colours on nested elements that carry a theme class (layers, popouts),
+// so the mapping has to land on those too.
+const NATIVE_SELECTOR = ":root:root:root, :root :is(.theme-dark, .theme-darker, .theme-midnight, .theme-light):not(.custom-user-profile-theme)";
 
 // The cheat sheet shown in the help pane. Keep in sync with onKey() and the Hyprland binds.
 const HELP_SECTIONS = [
@@ -70,6 +181,20 @@ const HELP_SECTIONS = [
     ["[ ]  1-7", "previous / next tab, or jump to a tab"],
     ["a", "add friend"],
     ["/", "search friends (esc leaves the search)"],
+    ["h ←", "back to the channels pane"],
+  ]],
+  ["messages (main window)", [
+    ["esc", "in an empty chat input: put a cursor on the newest message"],
+    ["j k  ↓ ↑", "move between messages"],
+    ["g G", "oldest loaded / newest (jumps back to the present)"],
+    ["enter l", "open the message's first link or attachment"],
+    ["f", "label every link, image, reaction and button in the message; press a label to click it"],
+    ["r", "reply"],
+    ["e", "edit (your own messages)"],
+    ["+", "add a reaction"],
+    ["o", "more options (discord's menu: forward, pin, mark unread, delete, ...)"],
+    ["y Y", "copy the message's text / a link to it"],
+    ["esc i", "back to the chat input (or just start typing)"],
     ["h ←", "back to the channels pane"],
   ]],
   ["user", [
@@ -149,7 +274,7 @@ function readOmarchy() {
   return { c, font, key: colorsText + "\n" + (font || "") };
 }
 
-function omarchyCss({ c, font }) {
+function omarchyCss({ c, font }, native) {
   const mix = (a, b, pct) => `color-mix(in oklab, ${a}, ${b} ${pct}%)`;
   const bg = c.background, fg = c.foreground, sel = c.selection || mix(bg, fg, 20);
   const accent = c.accent || c.blue, red = c.red, border = c.active_border_color || accent;
@@ -167,8 +292,31 @@ function omarchyCss({ c, font }) {
     ramp("yellow", c.yellow, c.bright_yellow) + ramp("purple", c.magenta, c.bright_magenta) +
     `--font:${fam};--code-font:${fam};`;
   // :root:root / html body outrank the theme's own :root / body declarations.
-  return `:root:root, html body { ${vars} } html body { font-weight: 400; letter-spacing: normal; }`;
+  return `:root:root, html body { ${vars} } html body { font-weight: 400; letter-spacing: normal; }` +
+    (native ? `${NATIVE_SELECTOR} { ${NATIVE_MAP.map(([k, v]) => `${k}:${v};`).join("")} }` : "");
 }
+
+// Which BetterDiscord themes are on; when this changes the theme CSS changes too.
+const themeSig = () => JSON.stringify(BdApi.Themes.getAll().filter((t) => BdApi.Themes.isEnabled(t.id)).map((t) => t.id));
+
+// Main-window cursors (friends list, messages) and the link hints.
+const HINT_KEYS = "asdfghjklqwertyuiopzxcvbnm";
+const MAIN_CURSOR_CSS = `
+[data-pp-cursor], [data-pp-msg] { outline: 1px dashed var(--text-3, var(--text-muted, #bbb)) !important; outline-offset: -2px;
+  background: var(--hover, var(--background-modifier-hover, rgba(128, 128, 128, .12))) !important; }
+#pp-hints { position: fixed; inset: 0; pointer-events: none; z-index: 100000; }
+#pp-hints span { position: absolute; padding: 0 4px; font: 600 12px/16px var(--font-code, monospace); text-transform: uppercase;
+  background: var(--accent-2, var(--brand-500, #5865f2)); color: var(--bg-4, #fff); border: 1px solid var(--bg-4, #000); }
+`;
+
+const copyText = (text) => {
+  const native = window.DiscordNative?.clipboard;
+  return native?.copy ? Promise.resolve(native.copy(text)) : navigator.clipboard.writeText(text);
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// toast("...", "success" | "critical"), as in the Vesktop version
+const toast = (text, variant = "default") =>
+  BdApi.UI.showToast(`PanePopout: ${text}`, { type: { success: "success", critical: "error" }[variant] || "info" });
 
 module.exports = class PanePopout {
   constructor() {
@@ -180,6 +328,13 @@ module.exports = class PanePopout {
     this.openFolders = new Set();
     this.geom = {};      // pane -> {w, h}: the window's real tiled size, from the helper
     this.followOmarchy = true;
+    this.paletteTheme = false; // the active theme defines the palette (system24, midnight, ...) and maps it onto Discord
+    this.seenThemeSig = null;
+    this.themeChecks = [];
+    this.chat = {};          // stores for the message keys (kept out of S: pane renders don't need them)
+    this.msgCursor = null;   // DOM id of the message under the cursor: chat-messages-<channel>-<message>
+    this.hovered = null;
+    this.hints = null;
   }
 
   // -------------------------------------------------------------------------
@@ -193,10 +348,20 @@ module.exports = class PanePopout {
     this.loadModules();
     this.subscribe();
     this.addSplitButton();
-    this.onMainKey = (e) => this.friendsKey(e);
+    this.onMainKey = (e) => {
+      if (document.querySelector('[class*="peopleColumn_"]')) return this.friendsKey(e);
+      this.messagesKey(e);
+    };
+    // typing again (chat input, an edit box) ends the message cursor
+    this.onMainFocus = (e) => { if (e.target?.matches?.('[role="textbox"]')) this.exitMessages(); };
+    this.onMainMouse = (e) => {
+      this.cancelHints();
+      if (!e.target?.closest?.('[class*="layerContainer_"]')) this.exitMessages();
+    };
     document.addEventListener("keydown", this.onMainKey, true);
-    BdApi.DOM.addStyle("PanePopout-friends",
-      `[data-pp-cursor]{outline:1px dashed var(--text-3,#bbb)!important;outline-offset:-2px;background:var(--hover)!important}`);
+    document.addEventListener("focusin", this.onMainFocus, true);
+    document.addEventListener("mousedown", this.onMainMouse, true);
+    BdApi.DOM.addStyle("PanePopout-friends", MAIN_CURSOR_CSS);
     for (const d of [TO_HYPR, TO_DISCORD]) { try { fs.mkdirSync(d, { recursive: true }); } catch (e) {} }
     takeAll(TO_DISCORD); // drop stale commands from before a reload
     try { this.watcher = fs.watch(TO_DISCORD, {}, () => this.pollInbox()); } catch (e) { console.warn("[PanePopout] watch failed", e); }
@@ -217,30 +382,69 @@ module.exports = class PanePopout {
     post(TO_HYPR, { action: "docked" });
     clearInterval(this.poller);
     clearInterval(this.themeTimer);
+    this.themeChecks.forEach(clearTimeout);
     clearTimeout(this.renderTimer); this.renderTimer = null;
     try { this.watcher?.close(); } catch (e) {}
     this.unsubscribe?.();
     this.splitBtn?.remove();
     document.removeEventListener("keydown", this.onMainKey, true);
+    document.removeEventListener("focusin", this.onMainFocus, true);
+    document.removeEventListener("mousedown", this.onMainMouse, true);
+    this.exitMessages();
     BdApi.DOM.removeStyle("PanePopout-friends");
     document.querySelectorAll("[data-pp-cursor]").forEach((el) => el.removeAttribute("data-pp-cursor"));
     BdApi.DOM.removeStyle("PanePopout-omarchy");
-    this.omarchyKey = null;
+    this.omarchyKey = null; this.omarchyStyle = null;
   }
 
-  // Swap the Discord theme's palette for Omarchy's (live: rechecked every 2s).
+  // Theme order: Omarchy (when found and the setting is on), else the custom BetterDiscord
+  // theme, else Discord's own. Following Omarchy sets the palette variables; unless the active
+  // theme maps that palette onto Discord itself, Discord's own colour variables are set as well,
+  // so the main window follows Omarchy with any theme or none. Live: rechecked every 2s.
   applyOmarchy(force) {
-    if (!this.followOmarchy) {
-      if (this.omarchyKey !== null || force) { BdApi.DOM.removeStyle("PanePopout-omarchy"); this.omarchyKey = null; this.syncTheme(true); }
+    this.checkThemes();
+    const o = this.followOmarchy ? readOmarchy() : null;
+    if (!o) {
+      if (this.omarchyKey !== null || force) { BdApi.DOM.removeStyle("PanePopout-omarchy"); this.omarchyKey = null; this.omarchyStyle = null; this.syncTheme(true); }
       return;
     }
-    const o = readOmarchy();
-    if (!o) return;
-    if (!force && o.key === this.omarchyKey) return;
-    this.omarchyKey = o.key;
+    const key = `${o.key}\n${this.paletteTheme}`;
+    if (!force && key === this.omarchyKey) return;
+    this.omarchyKey = key;
+    this.omarchyStyle = omarchyCss(o, !this.paletteTheme);
     BdApi.DOM.removeStyle("PanePopout-omarchy");
-    BdApi.DOM.addStyle("PanePopout-omarchy", omarchyCss(o));
+    BdApi.DOM.addStyle("PanePopout-omarchy", this.omarchyStyle);
     this.syncTheme(true);
+  }
+
+  // Does the active theme itself (not our Omarchy style) define the palette variables? Checked
+  // with our style taken out for a moment, only when the enabled themes change, and again a few
+  // times after since themes load their @imports late.
+  detectPaletteTheme() {
+    if (this.omarchyStyle) BdApi.DOM.removeStyle("PanePopout-omarchy");
+    const found = !!getComputedStyle(document.body).getPropertyValue("--bg-4").trim();
+    if (this.omarchyStyle) BdApi.DOM.addStyle("PanePopout-omarchy", this.omarchyStyle);
+    return found;
+  }
+
+  checkThemes() {
+    const sig = safe(themeSig, "");
+    if (sig === this.seenThemeSig) return;
+    this.seenThemeSig = sig;
+    this.paletteTheme = this.detectPaletteTheme();
+    this.themeChecks.forEach(clearTimeout);
+    this.themeChecks = [1500, 5000, 15000].map((ms) => setTimeout(() => {
+      const found = this.detectPaletteTheme();
+      if (found === this.paletteTheme) return;
+      this.paletteTheme = found;
+      this.applyOmarchy();
+    }, ms));
+  }
+
+  themeMode() {
+    if (this.omarchyKey !== null) return "omarchy";
+    const custom = safe(() => JSON.parse(themeSig()).length, 0) > 0;
+    return custom || getComputedStyle(document.body).getPropertyValue("--bg-4").trim() ? "custom theme" : "discord";
   }
 
   getSettingsPanel() {
@@ -248,7 +452,7 @@ module.exports = class PanePopout {
     wrap.style.cssText = "padding:8px 0;color:var(--text-normal,#ddd);line-height:1.4";
     wrap.innerHTML =
       `<label style="display:flex;gap:10px;align-items:center;cursor:pointer"><input type="checkbox"> Follow the Omarchy theme (colours and font)</label>` +
-      `<div style="opacity:.7;margin-top:6px;font-size:13px">Keeps your Discord theme's layout and panel labels but uses the current Omarchy theme's colours and monospace font, and follows Omarchy theme changes live. Turn off to use the Discord theme's own palette.</div>`;
+      `<div style="opacity:.7;margin-top:6px;font-size:13px">Recolours Discord (and the panes) with the current Omarchy theme's colours and monospace font, live, over any BetterDiscord theme's colours; a theme's layout is kept. Turn off, or without Omarchy, to use your BetterDiscord theme or Discord's own.</div>`;
     const cb = wrap.querySelector("input");
     cb.checked = this.followOmarchy;
     cb.onchange = () => { this.followOmarchy = cb.checked; BdApi.Data.save("PanePopout", "followOmarchy", cb.checked); this.applyOmarchy(true); };
@@ -269,6 +473,10 @@ module.exports = class PanePopout {
       GuildSettings: st("UserGuildSettingsStore"), Presence: st("PresenceStore"), Media: st("MediaEngineStore"),
       RTC: st("RTCConnectionStore"),
     };
+    this.chat = { Message: st("MessageStore"), PendingReply: st("PendingReplyStore") };
+    // every Flux store holds Discord's dispatcher
+    this.dispatcher = this.S.User?._dispatcher ||
+      safe(() => W.getModule((m) => typeof m?.dispatch === "function" && typeof m?.subscribe === "function" && typeof m?.register === "function", { searchExports: true }), null);
     this.transitionTo =
       safe(() => W.getByStrings("transitionTo - Transitioning to", { searchExports: true }), null) ||
       safe(() => W.getModule((m) => typeof m === "function" && String(m).includes("transitionTo - Transitioning to"), { searchExports: true }), null);
@@ -276,7 +484,7 @@ module.exports = class PanePopout {
 
   // Read-only health report for `discord-panes diag`: which Discord internals were found,
   // counts, pane sizes and theme values. No names, IDs or message content are recorded.
-  writeDiag() {
+  async writeDiag() {
     const S = this.S;
     const methods = [
       ["SortedGuild", "getGuildFolders"], ["SelectedChannel", "getMostRecentSelectedTextChannelId"],
@@ -286,7 +494,7 @@ module.exports = class PanePopout {
     ];
     const cs = getComputedStyle(document.body);
     const diag = {
-      version: "1.0.0",
+      version: "1.1.0",
       time: new Date().toISOString(),
       stores: Object.fromEntries(Object.entries(S).map(([k, v]) => [k, !!v])),
       transitionTo: typeof this.transitionTo,
@@ -298,6 +506,7 @@ module.exports = class PanePopout {
       },
       userPanelButtonsFound: ["mute", "deafen", "settings"].map((n) => [n, !!this.findPanelButton({ mute: /^(un)?mute$/i, deafen: /^(un)?deafen$/i, settings: /user settings/i }[n])]),
       friendsPage: { open: !!document.querySelector('[class*="peopleColumn_"]') },
+      messages: await this.messageProbe(),
       split: Object.keys(this.wins),
       panes: Object.fromEntries(Object.entries(this.wins).map(([k, w]) => [k, w.doc ? {
         rows: (this.items[k] || []).length, tile: this.geom[k] || null, page: [w.win.innerWidth, w.win.innerHeight],
@@ -305,6 +514,8 @@ module.exports = class PanePopout {
       } : { loading: true }])),
       theme: {
         followOmarchy: this.followOmarchy, omarchyFound: !!readOmarchy(),
+        mode: this.themeMode(), paletteTheme: this.paletteTheme,
+        discordVars: Object.fromEntries(["--background-base-low", "--background-base-lowest", "--text-default", "--app-frame-background", "--font-primary"].map((v) => [v, cs.getPropertyValue(v).trim()])),
         vars: Object.fromEntries(["--bg-4", "--text-3", "--accent-2", "--border-hover"].map((v) => [v, cs.getPropertyValue(v).trim()])),
         font: cs.fontFamily,
       },
@@ -484,12 +695,14 @@ module.exports = class PanePopout {
   }
 
   // Copy the active BetterDiscord theme (fonts, @imports) and the main window's resolved
-  // colour variables into every pane, so they look like the theme's own panels.
+  // colour variables into every pane, so they look like the theme's own panels. Without a
+  // palette theme the colours come from Discord's own variables (NATIVE_FALLBACK).
   syncTheme(force) {
     const panes = Object.values(this.wins).filter((w) => w.doc);
     if (!panes.length) return;
     const cs = getComputedStyle(document.body);
-    const vars = THEME_VARS.map((v) => [v, cs.getPropertyValue(v).trim()]).filter(([, val]) => val);
+    const get = (v) => cs.getPropertyValue(v).trim();
+    const vars = THEME_VARS.map((v) => [v, get(v) || (NATIVE_FALLBACK[v] || []).map(get).find(Boolean) || ""]).filter(([, val]) => val);
     // Only the resolved variables and the font files are copied, not the theme's rules:
     // its broad selectors (e.g. [class*="list"]) would otherwise restyle the panes' own markup.
     const text =
@@ -928,13 +1141,255 @@ module.exports = class PanePopout {
     e.stopPropagation();
   }
 
+  // ----- messages (Discord's own chat in the main window) ---------------------
+  // Esc in an empty chat input puts a cursor on the newest message; plain keys then move
+  // it and act on that message. Actions press Discord's own controls (or make the same
+  // dispatch its buttons make), so they behave like clicking.
+  msgPrefix() {
+    const cid = safe(() => this.S.SelectedChannel.getChannelId(), null);
+    return cid ? `chat-messages-${cid}-` : null;
+  }
+  messageEls() {
+    const p = this.msgPrefix();
+    if (!p) return [];
+    return [...document.querySelectorAll(`[id^="${p}"]`)].filter(el => /^\d+$/.test(el.id.slice(p.length)));
+  }
+  messageOf(el) {
+    const p = this.msgPrefix();
+    if (!p || !el.id.startsWith(p)) return null;
+    const cid = p.slice("chat-messages-".length, -1);
+    const msg = safe(() => this.chat.Message.getMessage(cid, el.id.slice(p.length)), null);
+    const channel = safe(() => this.S.Channel.getChannel(cid), null);
+    return msg && channel ? { msg, channel } : null;
+  }
+  setMsgCursor(el) {
+    document.querySelectorAll("[data-pp-msg]").forEach(e => e.removeAttribute("data-pp-msg"));
+    this.unhover();
+    this.msgCursor = el?.id || null;
+    if (el) { el.setAttribute("data-pp-msg", ""); el.scrollIntoView({ block: "nearest" }); }
+  }
+  enterMessages() {
+    const els = this.messageEls();
+    if (!els.length) return;
+    document.activeElement?.blur?.();
+    this.setMsgCursor(els[els.length - 1]);
+  }
+  exitMessages(focusInput = false) {
+    this.cancelHints();
+    if (this.msgCursor || document.querySelector("[data-pp-msg]")) this.setMsgCursor(null);
+    if (focusInput) this.focusChatInput();
+  }
+  // Esc in the chat input only moves to the messages when it has nothing else to do there
+  inputIdle(box) {
+    if ((box.textContent || "").replace(/[​﻿]/g, "").trim()) return false;
+    if (safe(() => this.chat.PendingReply.getPendingReply(this.S.SelectedChannel.getChannelId()), null)) return false; // Esc cancels the reply
+    return !document.querySelector('[class*="autocomplete_"], [role="menu"], [role="dialog"]');
+  }
+
+  messagesKey(e) {
+    if (this.hints) return this.hintKey(e);
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) {
+      // Discord sees this Esc too (it marks the channel read); the cursor appears after it
+      if (e.key === "Escape" && !e.shiftKey && t === this.mainTextbox() && this.inputIdle(t)) setTimeout(() => this.enterMessages(), 0);
+      return;
+    }
+    if (!this.msgCursor) return;
+    if (document.querySelector('[role="menu"], [role="dialog"]')) return; // Discord's menus/pickers keep their keys
+
+    const els = this.messageEls();
+    if (!els.length) return this.exitMessages();
+    let i = els.findIndex(el => el.id === this.msgCursor);
+    if (i < 0) this.setMsgCursor(els[i = els.length - 1]); // the channel changed, or the message was unloaded
+    else if (!els[i].hasAttribute("data-pp-msg")) els[i].setAttribute("data-pp-msg", ""); // re-rendered
+    const el = els[i];
+    const k = e.key;
+    if (k === "j" || k === "ArrowDown") this.setMsgCursor(els[Math.min(els.length - 1, i + 1)]);
+    else if (k === "k" || k === "ArrowUp") this.setMsgCursor(els[Math.max(0, i - 1)]); // at the top, Discord loads older ones
+    else if (k === "g" || k === "Home") this.setMsgCursor(els[0]);
+    else if (k === "G" || k === "End") this.jumpToPresent();
+    else if (k === "Enter" || k === "l" || k === "ArrowRight") this.openPrimary(el);
+    else if (k === "f") this.showHints(el);
+    else if (k === "o") this.messageMenu(el);
+    else if (k === "r") this.reply(el);
+    else if (k === "e") this.edit(el);
+    else if (k === "+" || k === "=") this.react(el);
+    else if (k === "y" || k === "Y") this.copyMessage(el, k === "Y");
+    else if (k === "Escape" || k === "i") this.exitMessages(true);
+    else if (k === "h" || k === "ArrowLeft") this.focusPane("channels");
+    else if (k === "?") this.toggleHelp();
+    else {
+      // any other character: back to typing, and the key lands in the chat input
+      if (k.length === 1) { this.exitMessages(true); e.stopPropagation(); }
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  jumpToPresent() {
+    const bar = document.querySelector('[class*="jumpToPresentBar_"]');
+    const btn = [...(bar || document).querySelectorAll('button, [role="button"]')].find(b => /jump to present/i.test(b.textContent || ""))
+      || bar?.querySelector("button");
+    const last = () => { const els = this.messageEls(); this.setMsgCursor(els[els.length - 1]); };
+    if (btn) { btn.click(); setTimeout(last, 600); } else last();
+  }
+
+  // Everything clickable in a message that is actually on screen (the element at its centre
+  // belongs to it, so covered and scrolled-away ones are skipped). Not Discord's hover toolbar.
+  clickables(el) {
+    const out = [];
+    for (const c of el.querySelectorAll('a[href], button, [role="button"], [role="link"]')) {
+      if (c.closest('[class*="buttonContainer_"], [class*="hoverBar"]')) continue;
+      const r = c.getClientRects()[0];
+      if (!r || r.width < 2 || r.height < 2) continue;
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      if (hit && c.contains(hit)) out.push(c);
+    }
+    return out;
+  }
+  openPrimary(el) {
+    const c = this.clickables(el).find(c => c.closest('[id^="message-content-"], [id^="message-accessories-"]') && !c.closest('[class*="reaction"]'));
+    if (c) c.click(); else toast("no link or attachment in this message");
+  }
+  showHints(el) {
+    const els = this.clickables(el).slice(0, HINT_KEYS.length);
+    if (!els.length) return toast("nothing to click in this message");
+    const box = document.createElement("div");
+    box.id = "pp-hints";
+    els.forEach((c, n) => {
+      const r = c.getClientRects()[0];
+      const h = document.createElement("span");
+      h.textContent = HINT_KEYS[n];
+      h.style.left = `${Math.max(0, r.left - 6)}px`;
+      h.style.top = `${Math.max(0, r.top - 6)}px`;
+      box.appendChild(h);
+    });
+    document.body.appendChild(box);
+    this.hints = { els, box };
+  }
+  hintKey(e) {
+    if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key)) return;
+    const { els } = this.hints;
+    this.cancelHints();
+    e.preventDefault();
+    e.stopPropagation();
+    const c = els[HINT_KEYS.indexOf(e.key)];
+    if (c?.isConnected) c.click();
+  }
+  cancelHints() { this.hints?.box.remove(); this.hints = null; }
+
+  // Discord draws a message's toolbar (reply, react, edit, ...) on hover; fake the hover.
+  hover(el) {
+    const t = el.querySelector('[role="article"]') || el;
+    if (this.hovered === t) return;
+    this.unhover();
+    t.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null }));
+    t.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    this.hovered = t;
+  }
+  unhover() {
+    const t = this.hovered;
+    this.hovered = null;
+    if (t?.isConnected) t.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+  }
+  async messageButton(el, re) {
+    const find = () => [...el.querySelectorAll("[aria-label]")]
+      .find(b => re.test(b.getAttribute("aria-label") || "") && (b.tagName === "BUTTON" || b.getAttribute("role") === "button")) || null;
+    let b = find();
+    for (const wait of [50, 150]) {
+      if (b) break;
+      this.hover(el);
+      await sleep(wait);
+      b = find();
+    }
+    return b;
+  }
+  messageMenu(el) {
+    const t = el.querySelector('[role="article"]') || el;
+    const r = t.getBoundingClientRect();
+    const y = Math.min(Math.max(r.top + 16, 16), innerHeight - 16);
+    t.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: r.left + 80, clientY: y }));
+  }
+  async react(el) {
+    const b = await this.messageButton(el, /^add reaction$/i);
+    if (b) return b.click();
+    toast("couldn't find Discord's reaction button, so here's the message menu");
+    this.messageMenu(el);
+  }
+  async reply(el) {
+    const m = this.messageOf(el);
+    if (!m) return toast("can't reply to that");
+    const b = await this.messageButton(el, /^reply$/i);
+    if (b) b.click();
+    else {
+      const me = safe(() => this.S.User.getCurrentUser().id, null);
+      this.dispatcher?.dispatch({
+        type: "CREATE_PENDING_REPLY", channel: m.channel, message: m.msg, shouldMention: true,
+        showMentionToggle: m.channel.guild_id != null && m.msg.author?.id !== me,
+      });
+    }
+    this.exitMessages(true);
+  }
+  async edit(el) {
+    const m = this.messageOf(el);
+    const me = safe(() => this.S.User.getCurrentUser().id, null);
+    if (!m || !me || m.msg.author?.id !== me) return toast("you can only edit your own messages");
+    const b = await this.messageButton(el, /^edit$/i);
+    if (b) b.click();
+    else this.dispatcher?.dispatch({ type: "MESSAGE_START_EDIT", channelId: m.channel.id, messageId: m.msg.id, content: m.msg.content });
+    const id = el.id;
+    this.exitMessages();
+    setTimeout(() => document.getElementById(id)?.querySelector('[role="textbox"][contenteditable="true"]')?.focus(), 150);
+  }
+  copyMessage(el, link) {
+    const m = this.messageOf(el);
+    if (!m) return toast("can't copy that");
+    const text = link ? `https://discord.com/channels/${m.channel.guild_id ?? "@me"}/${m.channel.id}/${m.msg.id}` : m.msg.content;
+    if (!text) return toast("this message has no text");
+    copyText(text).then(() => toast(link ? "copied a link to the message" : "copied the message text", "success"), () => toast("couldn't copy", "critical"));
+  }
+
+  // for the diag report: whether the message keys can find what they need (counts only)
+  async messageProbe() {
+    const els = this.messageEls();
+    const last = els[els.length - 1];
+    const probe = {
+      channel: !!this.msgPrefix(), items: els.length, tags: [...new Set(els.map(e => e.tagName.toLowerCase()))],
+      articles: els.filter(e => e.querySelector('[role="article"]')).length,
+      content: document.querySelectorAll('[id^="message-content-"]').length,
+      textbox: !!this.mainTextbox(), dialogs: document.querySelectorAll('[role="dialog"]').length,
+      menus: document.querySelectorAll('[role="menu"]').length,
+      stores: Object.fromEntries(Object.entries(this.chat).map(([k, v]) => [k, !!v])),
+      dispatch: typeof this.dispatcher?.dispatch,
+      lastResolves: !!(last && this.messageOf(last)), lastClickables: last ? this.clickables(last).length : 0,
+      cursor: !!this.msgCursor,
+    };
+    if (last && !this.msgCursor) {
+      const labels = ["Add Reaction", "Reply", "Edit", "Forward", "More"];
+      const had = this.hovered;
+      this.hover(last);
+      await sleep(150);
+      probe.toolbarInMessage = labels.filter(l => last.querySelector(`[aria-label="${l}"]`));
+      probe.toolbarAnywhere = labels.filter(l => document.querySelector(`[aria-label="${l}"]`));
+      if (!had) this.unhover();
+    }
+    return probe;
+  }
+
   clearFilter() {
     const f = this.wins.channels?.filter;
     if (f && f.value) { f.value = ""; this.filterText = ""; }
   }
 
   focusPane(pane) { post(TO_HYPR, { action: "focus", pane }); }
-  focusChatInput() { document.querySelector('[role="textbox"][contenteditable="true"]')?.focus(); }
+  // the channel's chat input (edit boxes are textboxes too, but sit inside a message)
+  mainTextbox() {
+    return [...document.querySelectorAll('[role="textbox"][contenteditable="true"]')]
+      .find((el) => !el.closest('[id^="chat-messages-"]')) || null;
+  }
+  focusChatInput() { this.mainTextbox()?.focus(); }
   focusChat() { this.focusChatInput(); this.focusPane("main"); }
 
   onClick(pane, e) {

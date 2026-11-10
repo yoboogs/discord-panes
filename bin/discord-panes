@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""discord-panes: the Hyprland side of the BetterDiscord PanePopout plugin.
+"""discord-panes: the Hyprland side of the PanePopout plugin (BetterDiscord or Vesktop).
 
 The plugin draws Discord's nav / channels / user panes in their own windows; this
-helper tiles them, moves focus between them and handles the keybind. BetterDiscord
-plugins can't run programs, so the two talk through small JSON files in
+helper tiles them, moves focus between them and handles the keybind. The plugin
+doesn't run programs, so the two talk through small JSON files in
 $XDG_RUNTIME_DIR/discord-panes/ (to-hypr/ for this helper, to-discord/ for the plugin).
 
 usage:
@@ -34,6 +34,9 @@ PANES = ["nav", "channels", "user"]
 NAV_WIDTH = 92
 CHANNELS_WIDTH = 300
 USER_HEIGHT = 200  # the page inside a Discord popout is never shorter than 200px; a shorter window draws wrong
+# Hyprland window classes of the supported clients: Discord (BetterDiscord) and Vesktop (Vencord).
+# Run one of them at a time: both plugins read the same inbox.
+CLIENT_CLASSES = {"discord", "vesktop"}
 
 _seq = itertools.count()
 
@@ -115,6 +118,23 @@ def clients():
         return []
 
 
+def is_client(c):
+    return c.get("class") in CLIENT_CLASSES
+
+
+def workspace_layout(client):
+    """The tiling layout of the client's workspace (Hyprland can set it per workspace), or
+    None if this Hyprland doesn't say. The panes are placed with dwindle's preselect."""
+    ws = (client.get("workspace") or {}).get("id")
+    try:
+        for w in json.loads(hyprctl("workspaces", "-j") or "[]"):
+            if w.get("id") == ws:
+                return w.get("tiledLayout")
+    except ValueError:
+        pass
+    return None
+
+
 def focus(addr):
     dispatch(f'hl.dsp.focus({{ window = "address:{addr}" }})', "focuswindow", f"address:{addr}")
 
@@ -164,9 +184,17 @@ def live_panes(state, cs=None):
 
 def find_main(state, cs):
     known = set(state.get("panes", {}).values()) | {state.get("help")}
-    candidates = [c for c in cs if c.get("class") == "discord" and c["address"] not in known]
-    # the main window's title ends with "Discord"; popouts we open are titled "Discord · <pane>"
-    candidates.sort(key=lambda c: (not c["title"].endswith("Discord"), "·" in c["title"]))
+    candidates = [c for c in cs if is_client(c) and c["address"] not in known]
+    # Popouts we open are titled "Discord · <pane>" (Vesktop opens every popout as "Discord
+    # Popout"); the main window's title ends with "Discord" on Discord and starts out as
+    # "Discord" on Vesktop. Among what's left, the biggest window is the main one.
+    def rank(c):
+        title, initial = c.get("title", ""), c.get("initialTitle", "")
+        popout = "·" in title or "Popout" in initial or "Popout" in title
+        mainish = title.endswith("Discord") or initial == "Discord"
+        w, h = c.get("size") or (0, 0)
+        return (popout, not mainish, -w * h)
+    candidates.sort(key=rank)
     return candidates[0] if candidates else None
 
 
@@ -184,7 +212,7 @@ def open_pane(name, anchor, direction):
     while time.time() < deadline:
         time.sleep(0.1)
         for c in clients():
-            if c.get("class") == "discord" and c["address"] not in before:
+            if is_client(c) and c["address"] not in before:
                 return c["address"]
     log(f"{name} window never appeared")
     return None
@@ -197,6 +225,11 @@ def split(state):
     main = find_main(state, cs)
     if not main:
         notify("Discord isn't running")
+        return
+    layout = workspace_layout(main)
+    if layout and layout != "dwindle":
+        notify(f"Discord's workspace uses the {layout} layout; the panes need dwindle "
+               "(on Omarchy, SUPER+L cycles the workspace layout)")
         return
     state = {"main": main["address"], "panes": {}}
     save_state(state)
@@ -312,7 +345,7 @@ def toggle_help(state):
     while time.time() < deadline and not addr:
         time.sleep(0.1)
         for c in clients():
-            if c.get("class") == "discord" and c["address"] not in before:
+            if is_client(c) and c["address"] not in before:
                 addr = c["address"]
                 if not c.get("floating"):
                     dispatch(f'hl.dsp.window.float({{ window = "address:{addr}", action = "toggle" }})',
