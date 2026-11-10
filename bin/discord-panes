@@ -1,0 +1,395 @@
+#!/usr/bin/env python3
+"""discord-panes: the Hyprland side of the BetterDiscord PanePopout plugin.
+
+The plugin draws Discord's nav / channels / user panes in their own windows; this
+helper tiles them, moves focus between them and handles the keybind. BetterDiscord
+plugins can't run programs, so the two talk through small JSON files in
+$XDG_RUNTIME_DIR/discord-panes/ (to-hypr/ for this helper, to-discord/ for the plugin).
+
+usage:
+  discord-panes toggle     split Discord into panes, or put it back together
+  discord-panes split | dock
+  discord-panes help       show / hide the plugin's keybinding cheat sheet
+  discord-panes focus nav|channels|user|main
+  discord-panes status     show what the helper knows
+  discord-panes diag       ask the plugin for its read-only health report
+  discord-panes daemon     run the helper (started from Hyprland autostart)
+"""
+import itertools
+import json
+import os
+import subprocess
+import sys
+import time
+
+RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "discord-panes")
+TO_HYPR = os.path.join(RUN, "to-hypr")
+TO_DISCORD = os.path.join(RUN, "to-discord")
+PIDFILE = os.path.join(RUN, "daemon.pid")
+STATEFILE = os.path.join(RUN, "state.json")
+DIAG_FILE = os.path.join(RUN, "diag.json")
+
+PANES = ["nav", "channels", "user"]
+# Pane sizes in px. dwindle ignores window-rule sizes, so we resize after tiling.
+NAV_WIDTH = 92
+CHANNELS_WIDTH = 300
+USER_HEIGHT = 200  # the page inside a Discord popout is never shorter than 200px; a shorter window draws wrong
+
+_seq = itertools.count()
+
+
+# ---------------------------------------------------------------------------
+# messaging
+# ---------------------------------------------------------------------------
+def ensure_dirs():
+    for d in (RUN, TO_HYPR, TO_DISCORD):
+        os.makedirs(d, mode=0o700, exist_ok=True)
+
+
+def post(dirpath, msg):
+    ensure_dirs()
+    name = f"{time.time_ns() // 1_000_000}-{next(_seq):06d}-{os.getpid()}.json"
+    tmp = os.path.join(dirpath, "." + name)
+    with open(tmp, "w") as f:
+        json.dump(msg, f)
+    os.rename(tmp, os.path.join(dirpath, name))  # atomic
+
+
+def take(dirpath):
+    try:
+        names = sorted(n for n in os.listdir(dirpath) if not n.startswith("."))
+    except FileNotFoundError:
+        return
+    for name in names:
+        p = os.path.join(dirpath, name)
+        try:
+            with open(p) as f:
+                msg = json.load(f)
+        except (OSError, ValueError):
+            msg = None
+        try:
+            os.unlink(p)
+        except FileNotFoundError:
+            continue
+        if isinstance(msg, dict):
+            yield msg
+
+
+# ---------------------------------------------------------------------------
+# Hyprland (Lua dispatch API, as used by Omarchy's own scripts)
+# ---------------------------------------------------------------------------
+def hyprctl(*args):
+    return subprocess.run(["hyprctl", *args], capture_output=True, text=True).stdout
+
+
+def dispatch(lua):
+    out = hyprctl("dispatch", lua).strip()
+    if out and out != "ok":
+        log(f"dispatch {lua!r}: {out}")
+
+
+def clients():
+    try:
+        return json.loads(hyprctl("clients", "-j") or "[]")
+    except ValueError:
+        return []
+
+
+def focus(addr):
+    dispatch(f'hl.dsp.focus({{ window = "address:{addr}" }})')
+
+
+def preselect(direction):
+    dispatch(f'hl.dsp.layout("preselect {direction}")')
+
+
+def resize(addr, w, h):
+    dispatch(f'hl.dsp.window.resize({{ window = "address:{addr}", x = {int(w)}, y = {int(h)} }})')
+
+
+def notify(text):
+    subprocess.run(["notify-send", "-a", "Discord panes", "Discord panes", text], capture_output=True)
+
+
+def log(text):
+    print(f"[discord-panes] {text}", file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# state
+# ---------------------------------------------------------------------------
+def load_state():
+    try:
+        with open(STATEFILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"main": None, "panes": {}}
+
+
+def save_state(state):
+    tmp = STATEFILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.rename(tmp, STATEFILE)
+
+
+def live_panes(state, cs=None):
+    alive = {c["address"] for c in (cs if cs is not None else clients())}
+    return {k: v for k, v in state.get("panes", {}).items() if v in alive}
+
+
+def find_main(state, cs):
+    known = set(state.get("panes", {}).values()) | {state.get("help")}
+    candidates = [c for c in cs if c.get("class") == "discord" and c["address"] not in known]
+    # the main window's title ends with "Discord"; popouts we open are titled "Discord · <pane>"
+    candidates.sort(key=lambda c: (not c["title"].endswith("Discord"), "·" in c["title"]))
+    return candidates[0] if candidates else None
+
+
+# ---------------------------------------------------------------------------
+# actions
+# ---------------------------------------------------------------------------
+def open_pane(name, anchor, direction):
+    """Focus `anchor`, preselect where dwindle should put the next window, ask the
+    plugin to open the pane, and wait for the new window to appear."""
+    focus(anchor)
+    preselect(direction)
+    before = {c["address"] for c in clients()}
+    post(TO_DISCORD, {"action": "open", "pane": name})
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        time.sleep(0.1)
+        for c in clients():
+            if c.get("class") == "discord" and c["address"] not in before:
+                return c["address"]
+    log(f"{name} window never appeared")
+    return None
+
+
+def split(state):
+    cs = clients()
+    if live_panes(state, cs):
+        return
+    main = find_main(state, cs)
+    if not main:
+        notify("Discord isn't running")
+        return
+    state = {"main": main["address"], "panes": {}}
+    save_state(state)
+    # Target layout (dwindle):  nav | channels / user | main (channel + chat + input)
+    for name, anchor, direction in (("nav", "main", "l"), ("channels", "main", "l"), ("user", "channels", "d")):
+        anchor_addr = state["main"] if anchor == "main" else state["panes"].get(anchor)
+        if not anchor_addr:
+            break
+        addr = open_pane(name, anchor_addr, direction)
+        if not addr:
+            notify(f"couldn't open the {name} pane; is the PanePopout plugin enabled?")
+            break
+        state["panes"][name] = addr
+        save_state(state)
+
+    size_panes(state)
+    send_geometry(state, force=True)
+    focus(state["main"])
+    post(TO_DISCORD, {"action": "focus-input"})
+
+
+def size_panes(state):
+    """nav: fixed width. channels/user column: fixed width, user a short strip at the bottom.
+    Resizing the bottom window of a dwindle split moves the wrong edge, so size channels
+    (the top one) to leave exactly USER_HEIGHT for user."""
+    p = state.get("panes", {})
+    geo = {c["address"]: c for c in clients()}
+    if p.get("nav") in geo:
+        resize(p["nav"], NAV_WIDTH, geo[p["nav"]]["size"][1])
+    if p.get("channels") in geo:
+        ch = geo[p["channels"]]
+        height = ch["size"][1]
+        if p.get("user") in geo:
+            us = geo[p["user"]]
+            column = us["at"][1] + us["size"][1] - ch["at"][1]
+            gap = us["at"][1] - (ch["at"][1] + ch["size"][1])
+            height = column - gap - USER_HEIGHT
+        resize(p["channels"], CHANNELS_WIDTH, height)
+
+
+_last_geometry = {}
+
+
+def send_geometry(state, force=False):
+    """Tell the plugin each pane's real size. Discord won't let a popout render smaller
+    than 320x180, so the plugin lays the pane out for the size Hyprland actually shows."""
+    panes = state.get("panes", {})
+    if not panes:
+        _last_geometry.clear()
+        return
+    geo = {c["address"]: c["size"] for c in clients()}
+    for name, addr in panes.items():
+        if addr not in geo:
+            continue
+        size = tuple(geo[addr])
+        if force or _last_geometry.get(name) != size:
+            _last_geometry[name] = size
+            post(TO_DISCORD, {"action": "geometry", "pane": name, "w": size[0], "h": size[1]})
+
+
+def dock(state):
+    post(TO_DISCORD, {"action": "dock"})
+    main = state.get("main")
+    state = {"main": None, "panes": {}}
+    save_state(state)
+    if main:
+        time.sleep(0.2)
+        focus(main)
+
+
+def handle(msg):
+    state = load_state()
+    action = msg.get("action")
+    if action == "toggle":
+        dock(state) if live_panes(state) else split(state)
+    elif action == "split":
+        split(state)
+    elif action == "dock":
+        dock(state)
+    elif action == "docked":  # the plugin closed the panes itself (e.g. SUPER+W on one)
+        save_state({"main": state.get("main"), "panes": {}})
+    elif action == "focus":
+        pane = msg.get("pane")
+        addr = state.get("main") if pane == "main" else state.get("panes", {}).get(pane)
+        if addr:
+            focus(addr)
+    elif action == "help":
+        toggle_help(state)
+    elif action == "help-closed":
+        state.pop("help", None)
+        save_state(state)
+
+
+HELP_SIZE = (600, 680)
+
+
+def toggle_help(state):
+    """Show the plugin's cheat sheet as a floating, centred window (or close it)."""
+    cs = clients()
+    alive = {c["address"]: c for c in cs}
+    if state.get("help") in alive:
+        post(TO_DISCORD, {"action": "close", "pane": "help"})
+        state.pop("help", None)
+        save_state(state)
+        return
+    if not find_main(state, cs):
+        notify("Discord isn't running")
+        return
+    before = set(alive)
+    post(TO_DISCORD, {"action": "open", "pane": "help"})
+    addr = None
+    deadline = time.time() + 8
+    while time.time() < deadline and not addr:
+        time.sleep(0.1)
+        for c in clients():
+            if c.get("class") == "discord" and c["address"] not in before:
+                addr = c["address"]
+                if not c.get("floating"):
+                    dispatch(f'hl.dsp.window.float({{ window = "address:{addr}", action = "toggle" }})')
+                break
+    if not addr:
+        notify("couldn't open the help; is the PanePopout plugin enabled?")
+        return
+    resize(addr, *HELP_SIZE)
+    dispatch(f'hl.dsp.window.center({{ window = "address:{addr}" }})')
+    focus(addr)
+    state["help"] = addr
+    save_state(state)
+
+
+def daemon_pid():
+    try:
+        with open(PIDFILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def daemon():
+    ensure_dirs()
+    if daemon_pid():
+        log("already running")
+        return
+    with open(PIDFILE, "w") as f:
+        f.write(str(os.getpid()))
+    # drop requests queued while nothing was listening
+    for _ in take(TO_HYPR):
+        pass
+    last_geo_check = 0.0
+    try:
+        while True:
+            for msg in take(TO_HYPR):
+                try:
+                    handle(msg)
+                except Exception as e:  # keep the helper alive whatever happens
+                    log(f"error handling {msg}: {e!r}")
+            now = time.monotonic()
+            if now - last_geo_check > 0.5:  # follow manual resizes while split
+                last_geo_check = now
+                try:
+                    send_geometry(load_state())
+                except Exception as e:
+                    log(f"geometry check failed: {e!r}")
+            time.sleep(0.05)
+    finally:
+        try:
+            os.unlink(PIDFILE)
+        except FileNotFoundError:
+            pass
+
+
+def ensure_daemon():
+    if daemon_pid():
+        return
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "daemon"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    for _ in range(20):
+        if daemon_pid():
+            return
+        time.sleep(0.05)
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "toggle"
+    if cmd == "daemon":
+        daemon()
+    elif cmd in ("toggle", "split", "dock"):
+        ensure_daemon()
+        post(TO_HYPR, {"action": cmd})
+    elif cmd == "help":
+        ensure_daemon()
+        post(TO_HYPR, {"action": "help"})
+    elif cmd == "focus" and len(argv) > 2:
+        post(TO_HYPR, {"action": "focus", "pane": argv[2]})
+    elif cmd == "status":
+        state = load_state()
+        print(json.dumps({"daemon_pid": daemon_pid(), "state": state, "live": live_panes(state)}, indent=1))
+    elif cmd == "diag":
+        before = os.path.getmtime(DIAG_FILE) if os.path.exists(DIAG_FILE) else 0
+        post(TO_DISCORD, {"action": "diag"})
+        for _ in range(50):
+            if os.path.exists(DIAG_FILE) and os.path.getmtime(DIAG_FILE) > before:
+                break
+            time.sleep(0.1)
+        else:
+            print("no answer from the plugin; is PanePopout enabled?", file=sys.stderr)
+            return 1
+        with open(DIAG_FILE) as f:
+            print(f.read())
+    else:
+        print(__doc__, file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv) or 0)
