@@ -3,7 +3,7 @@
  * @author yoboogs
  * @authorLink https://github.com/yoboogs
  * @description Splits Discord into tiled Hyprland windows (nav, channels, user) beside the main chat window, keyboard-driven, styled like the system24 theme and optionally following the Omarchy theme. Needs Hyprland and the discord-panes helper from the source repo.
- * @version 1.2.1
+ * @version 1.2.2
  * @source https://github.com/yoboogs/discord-panes
  * @website https://github.com/yoboogs/discord-panes
  */
@@ -554,7 +554,7 @@ module.exports = class PanePopout {
     ];
     const cs = getComputedStyle(document.body);
     const diag = {
-      version: "1.2.1",
+      version: "1.2.2",
       time: new Date().toISOString(),
       stores: Object.fromEntries(Object.entries(S).map(([k, v]) => [k, !!v])),
       transitionTo: typeof this.transitionTo,

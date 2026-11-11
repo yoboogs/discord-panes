@@ -19,7 +19,7 @@ import { FluxDispatcher, NavigationRouter, showToast } from "@webpack/common";
 
 const Native = VencordNative.pluginHelpers.PanePopout as PluginNative<typeof import("./native")>;
 
-const VERSION = "1.2.1";
+const VERSION = "1.2.2";
 const PANES = ["nav", "channels", "user"]; // the helper tiles them in this order
 
 const settings = definePluginSettings({
