@@ -166,6 +166,8 @@ const HELP_SECTIONS = [
   ["nav", [
     ["enter", "open server, then move to channels"],
     ["enter on folder", "open / close the folder"],
+    ["enter on +", "add a server: create one or join with an invite"],
+    ["enter on compass", "discover servers"],
     ["click", "open server (focus stays in nav)"],
   ]],
   ["channels", [
@@ -215,6 +217,8 @@ const CHANNEL = { TEXT: 0, VOICE: 2, CATEGORY: 4, ANNOUNCEMENT: 5, STAGE: 13, FO
 
 const ICONS = {
   folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  compass: '<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>',
   dm: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   mic: '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>',
   headphones: '<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>',
@@ -872,6 +876,10 @@ module.exports = class PanePopout {
       for (const [id, g] of guilds) rows.push(guildRow(id, g));
       rows.push({ html: `</div>` });
     }
+    // like the end of Discord's server list: add (create or join) a server, discover servers
+    rows.push({ html: '<div class="sep"></div>' });
+    rows.push({ act: { kind: "add-server" }, html: `<div class="srv" title="add a server: create or join"><span class="ico">${svg("plus")}</span></div>` });
+    rows.push({ act: { kind: "discover" }, html: `<div class="srv" title="discover servers"><span class="ico">${svg("compass")}</span></div>` });
     return rows;
   }
 
@@ -1033,6 +1041,16 @@ module.exports = class PanePopout {
 
   // Click the real (hidden) control in the main window's user panel, so Discord does
   // exactly what it normally does.
+  // Press one of the buttons at the end of Discord's (hidden) server list. Add a Server opens
+  // a dialog in the main window, so focus goes there and back to nav when it closes.
+  clickNavButton(pane, id, dialog) {
+    const b = document.querySelector(`[data-list-item-id="guildsnav___${id}"]`);
+    if (!b) return toast("couldn't find that button in Discord's server list");
+    b.click();
+    this.focusPane("main");
+    if (dialog) setTimeout(() => { if (document.querySelector('[role="dialog"]')) this.watchMenu(pane, [], '[role="dialog"]'); }, 400);
+  }
+
   findPanelButton(re) {
     const panel = document.querySelector('section[class*="panels_"]');
     return [...(panel?.querySelectorAll("button, [role=switch], [role=button]") || [])]
@@ -1086,6 +1104,8 @@ module.exports = class PanePopout {
       case "settings": this.clickPanelButton(/user settings/i); this.focusPane("main"); break;
       case "profile": this.openProfile(pane); break;
       case "disconnect": this.clickPanelButton(/^disconnect$/i); break;
+      case "add-server": this.clickNavButton(pane, "create-join-button", true); break;
+      case "discover": this.clickNavButton(pane, "guild-discover-button", false); break;
     }
   }
 
@@ -1478,7 +1498,7 @@ module.exports = class PanePopout {
     this.menuBusy = true;
     const restore = []; // undo anything opened up in the hidden sidebar to reach the row
     try {
-      if (["dms", "friends", "disconnect"].includes(item.kind)) return toast("Discord has no right-click menu for that");
+      if (["dms", "friends", "disconnect", "add-server", "discover"].includes(item.kind)) return toast("Discord has no right-click menu for that");
       const target = await this.sidebarTarget(item, restore);
       if (!target) return toast("couldn't find that in Discord's own list, so there's no menu for it");
       // line the menu up with the row: from the top for nav and channels, from the bottom for user
