@@ -1,197 +1,138 @@
 # discord-panes
 
-A [BetterDiscord](https://betterdiscord.app) or [Vesktop](https://vesktop.dev)
-(Vencord) plugin plus a small
-[Hyprland](https://hypr.land) helper that splits Discord into real tiled windows,
-laid out like the panes of the [system24](https://github.com/refact0r/system24)
-theme:
+**Discord as tiled Hyprland windows, driven from the keyboard.**
+
+discord-panes splits Discord's sidebar out of its window. The server list, the
+channel list and your user panel each become their own Hyprland window, tiled
+next to the chat like any other app, and you move between them with your usual
+window keys:
 
 ```
-nav | channels | channel
-    |----------|  chat
-    | user     |  input
+ nav | channels | chat
+     |----------|
+     | user     |
 ```
 
-- **nav**, **channels** and **user** become their own Hyprland windows, drawn by
-  the plugin from Discord's own data: servers and folders, unread and mention
-  badges, channel categories, joined threads, DMs with presence, mute and deafen.
-- The main Discord window stays as channel + chat + input, so Discord's real
-  message box, menus and dialogs keep working.
-- Move between panes with your usual Hyprland focus keys; inside a pane,
-  everything is driven by plain keys (`j`/`k`, Enter, `/`, ...). In the main
-  window, the friends page and the messages are keyboard-driven too: open links,
-  react, reply and more without the mouse.
-- The panes copy your Discord theme's colours. On [Omarchy](https://omarchy.org),
-  Discord can follow the Omarchy theme instead, live.
+It's a plugin for [BetterDiscord](https://betterdiscord.app) or
+[Vesktop](https://vesktop.dev), plus a small helper that tiles the windows. It
+was made for [Omarchy](https://omarchy.org) and works on any
+[Hyprland](https://hypr.land) setup.
 
-## Requirements
-
-- Linux with Hyprland (the helper places and focuses windows with `hyprctl`).
-  Developed on Hyprland 0.56 with the Lua config (Omarchy). Classic
-  `hyprland.conf` setups are supported by the helper but less tested. Discord's
-  workspace can use the dwindle or the scrolling layout, or Discord can float
-  (Omarchy's `SUPER L` cycles a workspace through all three).
-- Discord with BetterDiscord, **or** Vesktop. Vesktop needs `git` and `node` to
-  build Vencord with the plugin (Vencord has no way to load plugins at runtime).
-- Python 3 for the helper.
-- Optional: the system24 theme (the panes are styled after it, but work
-  without it), Omarchy (for theme following), `notify-send`.
+- **Real windows.** The panes tile, focus, resize and close like any other window.
+  The chat stays Discord's own, so the message box, menus and dialogs all work.
+- **Keyboard first.** Use `j` `k` and Enter in the panes, and `o` to open
+  Discord's own right-click menus. Messages and the friends list work from the
+  keyboard too.
+- **One key.** `SUPER ALT D` opens Discord and splits it, or puts it back
+  together.
+- **Looks native.** The panes are styled after the
+  [system24](https://github.com/refact0r/system24) theme and use your theme's
+  colours. On Omarchy, Discord follows the Omarchy theme live.
+- **Any layout.** It works with dwindle and scrolling, and with Discord floating.
 
 ## Install
+
+You need Hyprland, Python 3, and Discord with BetterDiscord or Vesktop.
 
 ```sh
 git clone https://github.com/yoboogs/discord-panes
 cd discord-panes
-./install.sh
+./install.sh            # Discord with BetterDiscord
+./install.sh vesktop    # or Vesktop
 ```
 
-`install.sh` copies the plugin into `~/.config/BetterDiscord/plugins/` and the
-helper to `~/.local/bin/discord-panes`, adds the keybinds (Lua-config Hyprland)
-or prints them for your `hyprland.conf` (classic), and starts the helper.
+The installer:
 
-Then enable **PanePopout** in Discord under Settings > Plugins and press
-`SUPER ALT D`.
+- puts the plugin in place;
+- installs the helper as `~/.local/bin/discord-panes` and starts it;
+- adds the keybindings to `~/.config/hypr/bindings.lua`, or prints them for a
+  classic `hyprland.conf`.
 
-### Vesktop
+Run it again to update.
 
-```sh
-./install.sh vesktop
-```
+- **BetterDiscord:** enable **PanePopout** under Settings > Plugins.
+- **Vesktop:** quit Vesktop first (tray > Quit). Vencord can't load plugins at
+  runtime, so the installer builds the latest Vencord with the plugin included
+  (this needs `git` and `node`) and points Vesktop at that build. That build
+  doesn't update itself, so re-run the installer to update Vencord. To go back,
+  reset Vencord Location under Settings > Vesktop Settings > Developer Options.
 
-Vencord only runs plugins compiled into it, so this clones the latest Vencord
-release into `~/.local/share/discord-panes/vencord`, adds the plugin as a
-userplugin (`vencord/panePopout/`), builds it, and points Vesktop at that build
-("Vencord Location"), with PanePopout enabled. Quit Vesktop first (tray > Quit):
-it writes its settings back on exit, so the installer only changes them while
-it's closed. If it's running, the build still happens and the installer tells
-you how to finish by hand.
+Then press `SUPER ALT D`.
 
-While Vesktop uses this build, Vencord doesn't update itself: re-run
-`./install.sh vesktop` to update it. To go back to Vesktop's own Vencord, reset
-Vencord Location in Settings > Vesktop Settings > Developer Options.
+## Use
 
-Run Discord or Vesktop, not both at once: their plugins share the helper's
-message files.
-
-Manual install: put `plugin/PanePopout.plugin.js` in your BetterDiscord plugins
-folder, `bin/discord-panes` somewhere on your `PATH`, and bind
-`discord-panes toggle` and `discord-panes help` to keys (see `hypr/`).
-
-To start the helper at login (so the in-Discord `split` button works before
-you've used a keybind), run `discord-panes daemon` from your Hyprland autostart.
-
-## Keys
+`SUPER ALT D` splits Discord into panes and puts it back together. If Discord
+isn't running, it opens it, and it splits as soon as it has loaded. With both
+Discord and Vesktop installed, the first press asks which one to use;
+`discord-panes client` changes that choice later. Closing any pane also puts
+Discord back together.
 
 | key | does |
 | --- | --- |
-| `SUPER ALT D` | split Discord into panes / put it back together (opens Discord if it isn't running) |
-| `SUPER ALT SHIFT D` | show / hide the help window (`?` in any pane too) |
-| your focus keys | move between panes |
-| `ALT TAB`, `ALT SHIFT TAB` | next / previous pane, left to right (Lua-config Hyprland) |
-| close window | closing any pane puts Discord back together |
-| `j` `k`, `g` `G` | move, jump to top / bottom (in panes) |
-| Enter, `l` | open the server / channel / DM under the cursor |
+| your focus keys, `ALT TAB` | move between panes (`ALT TAB` goes left to right) |
+| `j` `k`, `g` `G` | move, jump to top / bottom |
+| Enter, `l` | open the server, channel or DM |
+| `o`, right-click | Discord's right-click menu for it (`j` `k` `l` `h` `q` inside the menu) |
 | `/` | filter channels or DMs |
-| `esc` | back to the chat input |
 | `m` `d` `s` | mute, deafen, settings (user pane) |
-| `o`, right-click | Discord's own right-click menu for the row under the cursor (in panes) |
+| `esc` | back to the chat input |
+| `?`, `SUPER ALT SHIFT D` | every key, per pane |
 
-Messages in the main window work from the keyboard too. Press `esc` in an empty
-chat input to put a cursor on the newest message, then:
+The keys work in the main window too:
 
-| key | does |
-| --- | --- |
-| `j` `k`, `g` `G` | move between messages, oldest loaded / newest |
-| Enter, `l` | open the message's first link or attachment |
-| `f` | label every link, image, reaction and button in the message; type a label to click it |
-| `r` `e` `+` | reply, edit (your own), add a reaction |
-| `o` | Discord's message menu (forward, pin, mark unread, delete, ...) |
-| `y` `Y` | copy the text, copy a link to the message |
-| `esc`, `i` | back to the chat input (or just start typing) |
+- **Messages:** in an empty chat input, `esc` puts a cursor on the newest message.
+  Then `j` `k` move, `r` replies, `e` edits, `+` reacts, `f` labels every link and
+  button to click, `y` copies, and `o` opens the message menu.
+- **Friends page:** `j` `k` move through the list and `o` opens a friend's menu.
+  The help window lists the rest.
 
-If Discord isn't open, `SUPER ALT D` starts it. With both Discord and Vesktop
-installed, the first press asks which one to use (through Omarchy's menu, or
-walker, fuzzel, rofi or wofi) and remembers the answer in
-`~/.config/discord-panes/config.json`. Change it with `discord-panes client`
-(asks again) or `discord-panes client discord|vesktop`.
-
-On a Lua-config Hyprland, `install.sh` also replaces Omarchy's `ALT TAB` (see
-`hypr/alt-tab.lua`): while a Discord window is focused it goes through the
-windows on that workspace by where they are on screen, left to right (top to
-bottom within a column); anywhere else it does what Omarchy's does.
-
-The help window lists every key per pane, including the friends page. The
-`SUPER ALT ...` binds are only defaults; change them in your Hyprland config.
+The `SUPER ALT` keys are only defaults; change them in your Hyprland config.
+`ALT TAB` is set up only on Lua-config Hyprland, where it replaces Omarchy's
+binding (`hypr/alt-tab.lua`). It goes left to right while Discord is focused
+and does what Omarchy's does everywhere else.
 
 ## Settings
 
-Settings > Plugins > PanePopout:
+These are under Settings > Plugins > PanePopout:
 
-- **Split on start** (on by default): split Discord into panes as soon as it has
-  loaded and its window is showing (if it starts hidden in the tray, once you
-  open it). Needs the helper running; `SUPER ALT D` starts the helper and, when
-  Discord isn't running, opens it, so one press gets you a split Discord.
-- **Follow the Omarchy theme** (on by default), described below.
+- **Split on start** (on): split Discord as soon as it opens.
+- **Follow the Omarchy theme** (on): Discord and the panes take the current
+  Omarchy theme's colours and font, live. With this off, or without Omarchy,
+  they use your BetterDiscord or Vencord theme, or Discord's own.
 
-Discord and the panes take their colours from, in order:
-
-1. **Omarchy**, when it's installed and this is on: the current Omarchy theme's
-   colours and monospace font, following theme changes live. With a palette
-   theme such as system24 or midnight, the theme's layout stays and only its
-   colours change; with any other theme, or none, Discord's own colours are
-   replaced.
-2. **Your custom theme** (BetterDiscord or Vencord), when Omarchy isn't there or
-   this is off.
-3. **Discord's own theme** otherwise. The panes then copy Discord's colours.
+Split on start needs the helper running. `SUPER ALT D` starts it, but if you
+open Discord another way, start it at login instead. On Omarchy, add
+`o.launch_on_start(os.getenv("HOME") .. "/.local/bin/discord-panes daemon")` to
+`~/.config/hypr/autostart.lua`.
 
 ## How it works
 
-- `plugin/PanePopout.plugin.js` (BetterDiscord) opens the pane windows (as
-  Discord popouts), draws them, reads Discord's state through BetterDiscord's
-  official Webpack API, and navigates.
-- `vencord/panePopout/` is the same plugin for Vesktop: `index.ts` is a port of
-  the BetterDiscord file using Vencord's APIs, and `native.ts` runs in Vesktop's
-  main process to read and write the helper's message files (Vencord's page code
-  can't touch files). It only accepts the fixed paths below.
-- `bin/discord-panes` is the Hyprland side: it tiles the panes, sizes them,
-  moves focus and answers the keybinds.
-- The plugin doesn't run programs or open sockets, so the two exchange
-  small JSON messages through files in `$XDG_RUNTIME_DIR/discord-panes/`
-  (a private, per-user directory). Messages are a fixed set of actions (open,
-  dock, focus, geometry, help, diag); nothing received there is run as code.
-- `discord-panes diag` prints a read-only health report from the plugin: which
-  Discord internals it found, counts, pane sizes and theme values. It contains no
-  names, IDs or messages.
+The plugin opens each pane as a Discord popout window, then draws it itself
+from Discord's own data. The helper (`bin/discord-panes`) is the Hyprland side:
+it tiles and sizes the windows, moves focus and handles the keys. The plugin
+doesn't run programs or open sockets, so the two talk through small JSON files
+in `$XDG_RUNTIME_DIR/discord-panes/`. Those messages are a fixed set of
+actions, and nothing in them is run as code.
 
-The plugin makes no network requests of its own beyond loading server icons and
-avatars from Discord's CDN, and stores only its own UI state (collapsed
-categories, open folders, the theme setting) via BetterDiscord.
+The plugin makes no network requests of its own beyond Discord's CDN, for icons
+and avatars. It only stores its settings and UI state: collapsed categories and
+open folders.
 
 ## Known limits
 
-- Discord won't render a popout smaller than 320x200, so narrower or shorter
-  tiles are laid out for their real size, and the user pane is 200px tall.
-- Each pane loads Discord's popout page, which costs some memory.
-- BetterDiscord disables a plugin whose file is replaced by a rename (how most
-  editors save). `install.sh` writes the file in place to avoid that.
-- On the scrolling layout the panes and Discord are three columns of the tape
-  (nav, channels over user, Discord), sized to fill the screen; when you come back
-  to Discord from another window, the helper scrolls the panes back into view.
-  Scrolling has to run to the right (the default `scrolling:direction`).
-- When Discord's window floats, the panes float too: attached to its left side,
-  as tall as it, with the group centred where Discord was. Move or resize Discord
-  and the panes follow; docking puts Discord back unless you've moved it. With
-  BetterDiscord the floating panes can't be narrower than Discord's popout
-  minimum (320px), so nav comes out wide; Vesktop lifts that limit for the panes.
-- Switching the workspace's layout while split re-splits Discord for the new one.
-- A pane row's right-click menu (`o`) opens in the main window, next to the panes,
-  and focus moves there until it closes (it stays there if your choice opened a
-  dialog or settings). `j` `k` move through it, `l` opens a submenu or picks the
-  item, `h` backs out, `q` or `esc` closes it; the arrow keys and Enter work too. The menu comes from Discord's own sidebar, which stays
-  loaded but invisible while split, so rows Discord itself doesn't list (e.g.
-  channels you haven't opted into) have no menu.
-- Discord changes its internals often; if a pane stops updating, check
-  `discord-panes diag` and open an issue.
+- Run Discord or Vesktop, not both at once, because their plugins share the
+  helper's message files.
+- Discord won't draw a popout smaller than about 320×200, so the user pane is
+  200px tall. With BetterDiscord, floating panes can't be narrower than 320px;
+  Vesktop lifts that limit.
+- The scrolling layout has to scroll to the right (the default).
+- A pane's right-click menu opens in the main window, next to the panes. Rows
+  that Discord's own sidebar doesn't show, such as channels you haven't opted
+  into, have no menu.
+- Each pane loads a Discord popout page, which costs some memory.
+- Discord changes its internals often. If something stops working, run
+  `discord-panes diag`, which prints a health report without names or
+  messages, and open an issue.
 
 ## About this project
 
