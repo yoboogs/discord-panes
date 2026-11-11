@@ -220,6 +220,7 @@ const HELP_SECTIONS: [string, [string, string][]][] = [
         ["m", "mute / unmute"],
         ["d", "deafen / undeafen"],
         ["s", "open discord settings"],
+        ["enter on your name", "discord's profile menu: status, edit profile, switch accounts, ..."],
     ]],
 ];
 const HELP_HTML = HELP_SECTIONS.map(([title, keys]) =>
@@ -361,7 +362,7 @@ class Panes {
     onMainWake = () => this.mouseIdle(false);
     onMainKey = (e: KeyboardEvent) => {
         this.mouseIdle(true);
-        if (this.menuKey(e)) return;
+        if (this.menuKey(e) || this.popoutKey(e)) return;
         if (document.querySelector('[class*="peopleColumn_"]')) return this.friendsKey(e);
         this.messagesKey(e);
     };
@@ -1018,7 +1019,8 @@ class Panes {
         const vcWhere = vc?.guild_id ? safe(() => Guild.getGuild(vc.guild_id).name, "") : "";
         const rows: Row[] = [];
         rows.push({
-            html: `<div class="me"><span class="av">${av ? `<img src="${esc(av)}" alt="">` : ""}<i class="st st-${esc(status)}"></i></span>` +
+            act: { kind: "profile" },
+            html: `<div class="me" title="profile and status (enter)"><span class="av">${av ? `<img src="${esc(av)}" alt="">` : ""}<i class="st st-${esc(status)}"></i></span>` +
                 `<span class="who"><span class="name">${esc(me?.globalName || me?.username || "")}</span>` +
                 `<span class="sub">${esc(me?.username || "")}</span><span class="status">${esc(statusText)}</span></span></div>`,
         });
@@ -1087,6 +1089,7 @@ class Panes {
             case "mute": this.clickPanelButton(/^(un)?mute$/i); break;
             case "deafen": this.clickPanelButton(/^(un)?deafen$/i); break;
             case "settings": this.clickPanelButton(/user settings/i); this.focusPane("main"); break;
+            case "profile": this.openProfile(pane); break;
             case "disconnect": this.clickPanelButton(/^disconnect$/i); break;
         }
     }
@@ -1476,6 +1479,7 @@ class Panes {
         const item = idx == null ? null : this.items[pane]?.[idx];
         const w = this.wins[pane];
         if (!item || !w?.doc || this.menuBusy) return;
+        if (item.kind === "profile") return this.openProfile(pane); // its "menu" is the profile popout
         this.menuBusy = true;
         const restore: (() => void)[] = []; // undo anything opened up in the hidden sidebar to reach the row
         try {
@@ -1557,11 +1561,11 @@ class Panes {
 
     // When the menu closes, undo what was opened up to reach the row and give focus back to the
     // pane, unless the choice opened something in the main window (a dialog, settings).
-    watchMenu(pane: string, restore: (() => void)[]) {
+    watchMenu(pane: string, restore: (() => void)[], selector = '[role="menu"]') {
         clearInterval(this.menuWatch);
         const t0 = Date.now();
         this.menuWatch = setInterval(() => {
-            if (document.querySelector('[role="menu"]') && Date.now() - t0 < 120000) return;
+            if (document.querySelector(selector) && Date.now() - t0 < 120000) return;
             clearInterval(this.menuWatch); this.menuWatch = null;
             restore.forEach(f => safe(f, undefined));
             setTimeout(() => {
@@ -1595,6 +1599,49 @@ class Panes {
         return true;
     }
 
+    // The profile row opens Discord's own account popout (status, edit profile, switch
+    // accounts, ...) from the hidden user panel. It shows in the main window next to the user
+    // pane; focus moves to it and comes back when it closes. Its items are plain buttons, not a
+    // menu, so popoutKey gives it the menu keys.
+    async openProfile(pane: string) {
+        const btn = document.querySelector<HTMLElement>('section[class*="panels_"] [class*="accountPopoutButton_"]');
+        if (!btn) return toast("couldn't find Discord's profile button");
+        if (!document.querySelector(PROFILE_POPOUT)) btn.click();
+        let pop: Element | null = null;
+        for (let t = 0; t < 20 && !pop; t++) { await sleep(50); pop = document.querySelector(PROFILE_POPOUT); }
+        if (!pop) return toast("Discord didn't open the profile menu");
+        pop.querySelector<HTMLElement>('[class*="menuItemContent_"]')?.focus();
+        this.focusPane("main");
+        this.watchMenu(pane, [], PROFILE_POPOUT);
+    }
+
+    // Keys for the profile popout: j k move between its items, l or enter picks one (status
+    // opens Discord's status menu, which menuKey then drives), h or q closes it. Like menuKey,
+    // keys pressed in a pane go to it too.
+    popoutKey(e: KeyboardEvent) {
+        if (e.ctrlKey || e.altKey || e.metaKey || document.querySelector('[role="menu"]')) return false; // a submenu: menuKey's
+        const pop = document.querySelector(PROFILE_POPOUT);
+        const t = e.target as HTMLElement | null;
+        if (!pop || t?.isContentEditable || /^(INPUT|TEXTAREA)$/.test(t?.tagName || "")) return false;
+        const fromPane = t?.ownerDocument !== document;
+        const items = [...pop.querySelectorAll<HTMLElement>('[class*="menuItemContent_"]')];
+        const ae = document.activeElement;
+        const i = items.findIndex(el => el === ae || el.contains(ae));
+        const k = e.key;
+        if (k === "j" || k === "ArrowDown") items[Math.min(items.length - 1, i + 1)]?.focus();
+        else if (k === "k" || k === "ArrowUp") items[Math.max(0, i - 1)]?.focus();
+        else if (k === "g" || k === "Home") items[0]?.focus();
+        else if (k === "G" || k === "End") items[items.length - 1]?.focus();
+        else if ((k === "l" || k === "Enter" || k === " " || k === "ArrowRight") && i >= 0) items[i].click();
+        else if (k === "q" || k === "h" || k === "ArrowLeft" || (fromPane && k === "Escape"))
+            (ae || document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+        else return false;
+        e.preventDefault();
+        e.stopPropagation();
+        if (fromPane) this.focusPane("main");
+        return true;
+    }
+
     onRightClick(pane: string, e: MouseEvent) {
         e.preventDefault();
         const el = (e.target as HTMLElement).closest<HTMLElement>("[data-i]");
@@ -1614,7 +1661,7 @@ class Panes {
 
     onKey(pane: string, e: KeyboardEvent) {
         if (e.ctrlKey || e.altKey || e.metaKey) return; // every modifier chord stays with Hyprland/Omarchy
-        if (pane !== "help" && this.menuKey(e)) return;
+        if (pane !== "help" && (this.menuKey(e) || this.popoutKey(e))) return;
         const w = this.wins[pane];
         if (!w?.list) return;
         if (pane === "help") {
@@ -1661,6 +1708,8 @@ type Row = { html: string; act?: any; selected?: boolean; };
 // on a key press (but leaves where it was) can't hover anything. Real movement, a click or the
 // wheel wakes it up again; any key puts it back to sleep. Starts asleep.
 const MOUSE_IDLE_CSS = "html[data-pp-mouse-idle] #app-mount { pointer-events: none !important; }";
+// Discord's account popout (the user panel's profile and status menu)
+const PROFILE_POPOUT = '[class*="accountPopout_"]';
 const HINT_KEYS = "asdfghjklqwertyuiopzxcvbnm";
 const MAIN_CURSOR_CSS = `
 [data-pp-cursor], [data-pp-msg] { outline: 1px dashed var(--text-3, var(--text-muted, #bbb)) !important; outline-offset: -2px;
@@ -1774,6 +1823,8 @@ kbd { font: inherit; font-size: 12px; padding: 0 6px; color: var(--text-1, #eee)
 .pane-user .list { padding: 10px 12px; display: flex; flex-direction: column; justify-content: center; gap: 10px; overflow: hidden; }
 .me { display: flex; align-items: center; gap: 12px; }
 .me .av { width: 44px; height: 44px; }
+.me { cursor: pointer; }
+body.mouse .me:hover { background: var(--hover); }
 .who { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; }
 .who > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who .name { color: var(--text-2, #ddd); }
