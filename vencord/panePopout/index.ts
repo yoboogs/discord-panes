@@ -19,7 +19,7 @@ import { FluxDispatcher, NavigationRouter, showToast } from "@webpack/common";
 
 const Native = VencordNative.pluginHelpers.PanePopout as PluginNative<typeof import("./native")>;
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const PANES = ["nav", "channels", "user"]; // the helper tiles them in this order
 
 const settings = definePluginSettings({
@@ -28,6 +28,11 @@ const settings = definePluginSettings({
         description: "Follow the Omarchy theme: recolour Discord (and the panes) with the current Omarchy theme's colours and monospace font, live, over any Vencord theme's colours. Without Omarchy, your Vencord theme or Discord's own is used.",
         default: true,
         onChange: () => panes?.applyOmarchy(true),
+    },
+    splitOnStart: {
+        type: OptionType.BOOLEAN,
+        description: "Split into panes when Discord starts, once it has loaded and its window is showing. Needs the discord-panes helper running (SUPER+ALT+D starts it, and opens Vesktop if it isn't running).",
+        default: true,
     },
     // UI state, not shown in the settings page
     collapsed: { type: OptionType.CUSTOM, default: [] as string[] },
@@ -163,12 +168,15 @@ const HELP_SECTIONS: [string, [string, string][]][] = [
         ["super ← → ↑ ↓", "move between panes"],
         ["super shift ← → ↑ ↓", "swap panes around"],
         ["super w", "close a pane (puts discord back together)"],
+        ["alt tab  alt shift tab", "next / previous pane, left to right"],
     ]],
     ["in any pane", [
         ["j k  ↓ ↑", "move the cursor"],
         ["g G  home end", "jump to top / bottom"],
         ["enter l → space", "open what's under the cursor"],
         ["esc", "back to the chat input"],
+        ["o  right-click", "discord's own right-click menu for what's under the cursor"],
+        ["j k l h  q", "in that menu (or any discord menu): move, open / pick, back, close"],
         ["?", "show / hide this help"],
     ]],
     ["nav", [
@@ -346,7 +354,14 @@ class Panes {
     msgCursor: string | null = null; // DOM id of the message under the cursor: chat-messages-<channel>-<message>
     hovered: HTMLElement | null = null;
     hints: { els: HTMLElement[]; box: HTMLElement; } | null = null;
+    menuWatch: any = null; // paneMenu: waits for Discord's menu to close
+    menuBusy = false;
+    autoTimer: any = null; // autoSplit: waits for Discord to be ready
+    onMainMove = (e: MouseEvent) => { if (e.movementX || e.movementY) this.mouseIdle(false); };
+    onMainWake = () => this.mouseIdle(false);
     onMainKey = (e: KeyboardEvent) => {
+        this.mouseIdle(true);
+        if (this.menuKey(e)) return;
         if (document.querySelector('[class*="peopleColumn_"]')) return this.friendsKey(e);
         this.messagesKey(e);
     };
@@ -372,6 +387,11 @@ class Panes {
         document.addEventListener("keydown", this.onMainKey, true);
         document.addEventListener("focusin", this.onMainFocus, true);
         document.addEventListener("mousedown", this.onMainMouse, true);
+        window.addEventListener("mousemove", this.onMainMove, true);
+        window.addEventListener("mousedown", this.onMainWake, true);
+        window.addEventListener("wheel", this.onMainWake, { capture: true, passive: true });
+        addStyle("mouse", MOUSE_IDLE_CSS);
+        this.mouseIdle(true);
         addStyle("friends", MAIN_CURSOR_CSS);
         // drop stale commands from before a reload, then listen
         Native.takeInbox().catch(() => { }).finally(() => {
@@ -381,15 +401,10 @@ class Panes {
         });
         this.themeTimer = setInterval(() => { this.applyOmarchy(); this.syncTheme(); }, 2000);
         this.writeDiag();
+        // Split on start (the setting), or again after a reload of the plugin while it was split.
         const { resplitAt } = settings.store;
-        if (resplitAt) {
-            settings.store.resplitAt = 0;
-            if (Date.now() - resplitAt < 10000) {
-                Native.helperAlive().then(alive => {
-                    if (alive && !this.stopped) setTimeout(() => post({ action: "split" }), 1500);
-                }).catch(() => { });
-            }
-        }
+        if (resplitAt) settings.store.resplitAt = 0;
+        if (settings.store.splitOnStart || (resplitAt && Date.now() - resplitAt < 10000)) this.autoSplit();
     }
 
     stop() {
@@ -400,6 +415,8 @@ class Panes {
         post({ action: "docked" });
         clearInterval(this.poller);
         clearInterval(this.themeTimer);
+        clearInterval(this.menuWatch);
+        clearTimeout(this.autoTimer);
         this.themeChecks.forEach(clearTimeout);
         clearTimeout(this.renderTimer); this.renderTimer = null;
         Native.unwatchInbox().catch(() => { });
@@ -408,12 +425,36 @@ class Panes {
         document.removeEventListener("keydown", this.onMainKey, true);
         document.removeEventListener("focusin", this.onMainFocus, true);
         document.removeEventListener("mousedown", this.onMainMouse, true);
+        window.removeEventListener("mousemove", this.onMainMove, true);
+        window.removeEventListener("mousedown", this.onMainWake, true);
+        window.removeEventListener("wheel", this.onMainWake, true);
+        this.mouseIdle(false);
+        removeStyle("mouse");
         this.exitMessages();
         removeStyle("friends");
         document.querySelectorAll("[data-pp-cursor]").forEach(el => el.removeAttribute("data-pp-cursor"));
         removeStyle("omarchy");
         removeStyle("main");
         this.omarchyKey = null;
+    }
+
+    // Split as soon as Discord is ready: its sidebar is drawn, its window is showing (not hidden
+    // in the tray) and the helper is running (the helper does the tiling). Waits as long as the
+    // window stays hidden; gives up if there's no helper within two minutes.
+    autoSplit() {
+        const t0 = Date.now();
+        const tick = async () => {
+            this.autoTimer = null;
+            if (this.stopped || this.isSplit()) return;
+            const alive = await Native.helperAlive().catch(() => false);
+            if (this.stopped) return;
+            if (alive && document.querySelector('nav[class*="guilds_"]') && document.visibilityState === "visible") {
+                this.autoTimer = setTimeout(() => { if (!this.stopped && !this.isSplit()) post({ action: "split" }); }, 800); // let the window settle
+                return;
+            }
+            if (alive || Date.now() - t0 < 120000) this.autoTimer = setTimeout(tick, 500);
+        };
+        this.autoTimer = setTimeout(tick, 500);
     }
 
     // Theme order: Omarchy (when found and the setting is on), else the custom Vencord theme,
@@ -479,6 +520,7 @@ class Panes {
             PrivateSort: st("PrivateChannelSortStore"), Threads: st("ActiveJoinedThreadsStore"),
             GuildSettings: st("UserGuildSettingsStore"), Presence: st("PresenceStore"), Media: st("MediaEngineStore"),
             RTC: st("RTCConnectionStore"),
+            ExpandedFolders: st("ExpandedGuildFolderStore"), CategoryCollapse: st("CategoryCollapseStore"),
         };
         this.chat = { Message: st("MessageStore"), PendingReply: st("PendingReplyStore") };
     }
@@ -620,7 +662,11 @@ class Panes {
         const page = [...(sidebar?.parentElement?.children || [])].find(el => [...el.classList].some(c => c.startsWith("page_")));
         const pageCls = [...(page?.classList || [])].find(c => c.startsWith("page_"));
         let css = "#pp-split{display:none!important}"; // the panes have their own controls
-        if (sidebarCls) css += `.${sidebarCls}{display:none!important}`;
+        // hidden, not display:none: Discord's lists keep rendering, so pane rows can open
+        // their menus from there (paneMenu)
+        const sw = sidebar?.offsetWidth || 360;
+        if (sidebarCls) css += `.${sidebarCls}{position:fixed!important;left:0!important;top:0!important;height:100vh!important;` +
+          `width:${sw}px!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;z-index:-1!important}`;
         if (pageCls) css += `.${pageCls}{grid-column:1/-1!important}`;
         addStyle("main", css);
     }
@@ -667,6 +713,12 @@ class Panes {
         doc.body.replaceChildren();
         doc.body.removeAttribute("class");
         doc.title = `Discord · ${pane}`;
+        // let the window be smaller than a popout's usual minimum (matters when it floats);
+        // the title reaches the main process a moment later, so retry briefly
+        const freeSize = (tries: number) => Native.freePaneSize(pane).then(ok => {
+            if (!ok && tries > 0 && !this.stopped) setTimeout(() => freeSize(tries - 1), 200);
+        }).catch(() => { });
+        if (pane !== "help") freeSize(10);
 
         const themeStyle = doc.createElement("style"); themeStyle.id = "pp-theme"; doc.head.appendChild(themeStyle);
         const base = doc.createElement("style"); base.id = "pp-base"; base.textContent = BASE_CSS; doc.head.appendChild(base);
@@ -686,8 +738,17 @@ class Panes {
         win.addEventListener("focus", () => doc.body.classList.add("focused"));
         win.addEventListener("blur", () => doc.body.classList.remove("focused"));
         win.addEventListener("beforeunload", () => this.onPaneClosed(pane));
+        // The mouse starts out inactive: Omarchy hides the pointer on a key press but leaves it
+        // where it was, so hover highlights would follow an invisible pointer. Hover styles
+        // (body.mouse) only apply once the pointer really moves, and stop at the next key.
+        const mouse = (on: boolean) => doc.body.classList.toggle("mouse", on);
+        doc.addEventListener("mousemove", e => { if (e.movementX || e.movementY) mouse(true); });
+        doc.addEventListener("mousedown", () => mouse(true), true);
+        doc.addEventListener("keydown", () => mouse(false), true);
+        doc.documentElement.addEventListener("mouseleave", () => mouse(false));
         doc.addEventListener("keydown", e => this.onKey(pane, e));
         w.list!.addEventListener("click", e => this.onClick(pane, e));
+        w.list!.addEventListener("contextmenu", e => this.onRightClick(pane, e));
         w.filter?.addEventListener("input", () => { this.filterText = w.filter!.value; this.cursor.channels = 0; this.render("channels"); });
         this.syncTheme(true);
         this.applyGeometry(pane);
@@ -1395,6 +1456,8 @@ class Panes {
         if (f && f.value) { f.value = ""; this.filterText = ""; }
     }
 
+    mouseIdle(on: boolean) { document.documentElement.toggleAttribute("data-pp-mouse-idle", on); } // (an attribute: Discord rewrites html's classes)
+
     focusPane(pane: string) { post({ action: "focus", pane }); }
     // the channel's chat input (edit boxes are textboxes too, but sit inside a message)
     mainTextbox() {
@@ -1403,6 +1466,143 @@ class Panes {
     }
     focusChatInput() { this.mainTextbox()?.focus(); }
     focusChat() { this.focusChatInput(); this.focusPane("main"); }
+
+    // ----- Discord's own right-click menus for pane rows --------------------------
+    // The panes are drawn by this plugin, so they have no menus of their own. Discord's real
+    // sidebar is still in the main window, only invisible (see applyMainLayout), so `o` or a
+    // right-click on a pane row right-clicks the same row there: Discord opens its own menu in
+    // the main window, next to the panes, and focus moves to it until it closes.
+    async paneMenu(pane: string, idx: number | null | undefined) {
+        const item = idx == null ? null : this.items[pane]?.[idx];
+        const w = this.wins[pane];
+        if (!item || !w?.doc || this.menuBusy) return;
+        this.menuBusy = true;
+        const restore: (() => void)[] = []; // undo anything opened up in the hidden sidebar to reach the row
+        try {
+            if (["dms", "friends", "disconnect"].includes(item.kind)) return toast("Discord has no right-click menu for that");
+            const target = await this.sidebarTarget(item, restore);
+            if (!target) return toast("couldn't find that in Discord's own list, so there's no menu for it");
+            // line the menu up with the row: from the top for nav and channels, from the bottom for user
+            const r = w.list!.querySelector(`[data-i="${idx}"]`)?.getBoundingClientRect();
+            let y = r ? (pane === "user" ? innerHeight - (w.win.innerHeight - r.top) : r.top) : innerHeight / 3;
+            y = Math.round(Math.min(Math.max(y, 8), innerHeight - 8));
+            target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, buttons: 2, clientX: 8, clientY: y, view: window }));
+            let menu: Element | null = null;
+            for (let t = 0; t < 30 && !menu; t++) { await sleep(50); menu = document.querySelector('[role="menu"]'); } // some menus load lazily
+            if (!menu) return toast("Discord didn't open a menu for that");
+            this.focusPane("main");
+            this.watchMenu(pane, restore.splice(0));
+        } catch (e) {
+            console.error("[PanePopout] menu failed", e);
+        } finally {
+            restore.forEach(f => safe(f, undefined));
+            this.menuBusy = false;
+        }
+    }
+
+    // The row's element in Discord's hidden sidebar (or the user panel button), rendering it
+    // first if it has to: opening its folder or category for a moment, or scrolling the list.
+    async sidebarTarget(item: any, restore: (() => void)[]): Promise<Element | null> {
+        const { S } = this;
+        const sidebar = document.querySelector('nav[class*="guilds_"]')?.parentElement as HTMLElement | undefined;
+        if (!sidebar) return null;
+        const dispatch = (a: any) => FluxDispatcher.dispatch(a);
+        switch (item.kind) {
+            case "mute": return this.findPanelButton(/^(un)?mute$/i) ?? null;   // input device and volume
+            case "deafen": return this.findPanelButton(/^(un)?deafen$/i) ?? null; // output device and volume
+            case "settings": return this.findPanelButton(/user settings/i) ?? null;
+            case "folder": return this.findRow(sidebar, "guildsnav___", item.id, restore);
+            case "guild": {
+                const folder = safe(() => S.SortedGuild.getGuildFolders().find((f: any) => f.folderId && f.guildIds.includes(item.id)), null);
+                if (folder && S.ExpandedFolders && !S.ExpandedFolders.isFolderExpanded(folder.folderId)) {
+                    dispatch({ type: "TOGGLE_GUILD_FOLDER_EXPAND", folderId: folder.folderId });
+                    restore.push(() => dispatch({ type: "TOGGLE_GUILD_FOLDER_EXPAND", folderId: folder.folderId }));
+                }
+                return this.findRow(sidebar, "guildsnav___", item.id, restore);
+            }
+            case "channel": case "category": {
+                // a channel (or thread) in a category that's collapsed in Discord's own list
+                let c = safe(() => S.Channel.getChannel(item.id), null);
+                if (c && [10, 11, 12].includes(c.type)) c = safe(() => S.Channel.getChannel(c.parent_id), null);
+                const cat = item.kind === "channel" ? c?.parent_id : null;
+                if (cat && S.CategoryCollapse?.isCollapsed(cat)) {
+                    dispatch({ type: "CATEGORY_EXPAND", id: cat });
+                    restore.push(() => dispatch({ type: "CATEGORY_COLLAPSE", id: cat }));
+                }
+                return this.findRow(sidebar, "channels___", item.id, restore);
+            }
+            case "dm": return this.findRow(sidebar, "private-channels", item.id, restore);
+        }
+        return null;
+    }
+
+    // Discord's lists only render the rows in view, so scroll the hidden list until it's there.
+    async findRow(sidebar: HTMLElement, family: string, id: string, restore: (() => void)[]): Promise<Element | null> {
+        const get = () => sidebar.querySelector(`[data-list-item-id^="${family}"][data-list-item-id$="___${id}"]`);
+        for (let t = 0; t < 4 && !get(); t++) await sleep(50); // (just opened up: give it a moment)
+        if (get()) return get();
+        const any = sidebar.querySelector(`[data-list-item-id^="${family}"]`);
+        let sc = any?.parentElement as HTMLElement | null | undefined;
+        while (sc && !(sc.scrollHeight > sc.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;
+        if (!sc) return null;
+        const keep = sc.scrollTop;
+        restore.push(() => { sc.scrollTop = keep; });
+        for (let top = 0; top <= sc.scrollHeight; top += Math.max(100, sc.clientHeight * 0.8)) {
+            sc.scrollTop = top;
+            await sleep(60);
+            if (get()) return get();
+        }
+        return null;
+    }
+
+    // When the menu closes, undo what was opened up to reach the row and give focus back to the
+    // pane, unless the choice opened something in the main window (a dialog, settings).
+    watchMenu(pane: string, restore: (() => void)[]) {
+        clearInterval(this.menuWatch);
+        const t0 = Date.now();
+        this.menuWatch = setInterval(() => {
+            if (document.querySelector('[role="menu"]') && Date.now() - t0 < 120000) return;
+            clearInterval(this.menuWatch); this.menuWatch = null;
+            restore.forEach(f => safe(f, undefined));
+            setTimeout(() => {
+                const busy = document.querySelector('[role="dialog"], [class*="standardSidebarView_"]');
+                if (!busy && document.hasFocus() && this.wins[pane]) this.focusPane(pane);
+            }, 150);
+        }, 100);
+    }
+
+    // While one of Discord's menus is open, drive it with the pane keys: j k move, l opens a
+    // submenu (or picks the item, like enter), h backs out of a submenu, q closes. Discord's
+    // menus only know the arrow keys, so these are passed on as those. Keys pressed in a pane
+    // (before focus has reached the main window) go to the menu too, arrows and enter included.
+    menuKey(e: KeyboardEvent) {
+        if (e.ctrlKey || e.altKey || e.metaKey) return false;
+        const open = document.querySelector('[role="menu"]');
+        const t = e.target as HTMLElement | null;
+        if (!open || t?.isContentEditable || /^(INPUT|TEXTAREA)$/.test(t?.tagName || "")) return false; // e.g. a search box in the menu
+        const active = (document.activeElement?.closest?.('[role="menu"]') ? document.activeElement : open) as HTMLElement;
+        const menu = active.closest('[role="menu"]') || open;
+        const item = document.getElementById(menu.getAttribute("aria-activedescendant") || "");
+        const fromPane = t?.ownerDocument !== document;
+        let key = ({ j: "ArrowDown", k: "ArrowUp", h: "ArrowLeft", q: "Escape", l: item?.getAttribute("aria-haspopup") === "true" ? "ArrowRight" : "Enter" } as Record<string, string>)[e.key];
+        if (!key && fromPane && ["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Enter", "Escape", " "].includes(e.key)) key = e.key === " " ? "Enter" : e.key;
+        if (!key) return false;
+        e.preventDefault();
+        e.stopPropagation();
+        const code = ({ ArrowDown: 40, ArrowUp: 38, ArrowLeft: 37, ArrowRight: 39, Enter: 13, Escape: 27 } as Record<string, number>)[key];
+        active.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, keyCode: code, which: code, bubbles: true, cancelable: true }));
+        if (fromPane) this.focusPane("main");
+        return true;
+    }
+
+    onRightClick(pane: string, e: MouseEvent) {
+        e.preventDefault();
+        const el = (e.target as HTMLElement).closest<HTMLElement>("[data-i]");
+        if (!el) return;
+        this.cursor[pane] = +el.dataset.i!;
+        this.render(pane);
+        this.paneMenu(pane, +el.dataset.i!);
+    }
 
     onClick(pane: string, e: MouseEvent) {
         const el = (e.target as HTMLElement).closest<HTMLElement>("[data-i]");
@@ -1414,6 +1614,7 @@ class Panes {
 
     onKey(pane: string, e: KeyboardEvent) {
         if (e.ctrlKey || e.altKey || e.metaKey) return; // every modifier chord stays with Hyprland/Omarchy
+        if (pane !== "help" && this.menuKey(e)) return;
         const w = this.wins[pane];
         if (!w?.list) return;
         if (pane === "help") {
@@ -1443,6 +1644,7 @@ class Panes {
         else if (pane === "user" && k === "m") this.activate(pane, { kind: "mute" });
         else if (pane === "user" && k === "d") this.activate(pane, { kind: "deafen" });
         else if (pane === "user" && k === "s") this.activate(pane, { kind: "settings" });
+        else if (k === "o" || k === "ContextMenu" || (k === "F10" && e.shiftKey)) this.paneMenu(pane, this.cursor[pane]);
         else return;
         e.preventDefault();
     }
@@ -1455,6 +1657,10 @@ class Panes {
 type Row = { html: string; act?: any; selected?: boolean; };
 
 // Main-window cursors (friends list, messages) and the link hints.
+// Main window, mouse inactive: Discord's page ignores the pointer, so the pointer Omarchy hides
+// on a key press (but leaves where it was) can't hover anything. Real movement, a click or the
+// wheel wakes it up again; any key puts it back to sleep. Starts asleep.
+const MOUSE_IDLE_CSS = "html[data-pp-mouse-idle] #app-mount { pointer-events: none !important; }";
 const HINT_KEYS = "asdfghjklqwertyuiopzxcvbnm";
 const MAIN_CURSOR_CSS = `
 [data-pp-cursor], [data-pp-msg] { outline: 1px dashed var(--text-3, var(--text-muted, #bbb)) !important; outline-offset: -2px;
@@ -1488,13 +1694,13 @@ body.sized .pane {
   inset: auto; left: var(--gap, 12px); top: var(--gap, 12px);
   width: calc(var(--pp-w) - 2 * var(--gap, 12px)); height: calc(var(--pp-h) - 2 * var(--gap, 12px));
 }
-.pane:hover, body.focused .pane { border-color: var(--border-hover, #888); }
+body.mouse .pane:hover, body.focused .pane { border-color: var(--border-hover, #888); }
 .pane::after {
   content: attr(data-label); position: absolute; top: -10px; left: 8px; padding: 0 4px; line-height: 18px;
   background: var(--background-base-low, var(--bg-4, #181818)); color: var(--label-color, var(--text-5, #777));
   font-weight: var(--label-font-weight, 500); font-size: 16px; transition: color var(--border-hover-transition, .2s ease);
 }
-.pane:hover::after, body.focused .pane::after { color: var(--label-hover-color, var(--text-2, #ddd)); }
+body.mouse .pane:hover::after, body.focused .pane::after { color: var(--label-hover-color, var(--text-2, #ddd)); }
 .list { flex: 1; overflow-y: auto; overflow-x: hidden; outline: none; padding: 8px 0; scrollbar-width: thin; scrollbar-color: var(--bg-1, #444) transparent; }
 [data-cursor] { outline: 1px dashed var(--text-5, #666); outline-offset: -1px; }
 body:not(.focused) [data-cursor] { outline: none; }
@@ -1507,14 +1713,14 @@ body:not(.focused) [data-cursor] { outline: none; }
 .srv { position: relative; width: 40px; height: 40px; flex: none; cursor: pointer; display: grid; place-items: center;
   background: var(--bg-3, #222); color: var(--text-4, #999); transition: background var(--list-item-transition, .2s ease); }
 .srv img { width: 40px; height: 40px; object-fit: cover; opacity: .75; transition: opacity var(--list-item-transition, .2s ease); }
-.srv:hover img, .srv.sel img, body.focused .srv[data-cursor] img { opacity: 1; }
+body.mouse .srv:hover img, .srv.sel img, body.focused .srv[data-cursor] img { opacity: 1; }
 /* the cursor sits outside the icon: inside it, the (faded) icon image paints over the outline */
 .srv[data-cursor] { outline: 1px dashed var(--text-3, #bbb); outline-offset: 3px; }
-.srv:hover { background: var(--hover); color: var(--text-2); }
+body.mouse .srv:hover { background: var(--hover); color: var(--text-2); }
 .srv.sel { background: var(--active); color: var(--text-1); }
 .srv::before { content: ""; position: absolute; left: -10px; width: 4px; height: 0; background: var(--text-1, #eee); transition: height var(--list-item-transition, .2s ease); }
 .srv.unread::before { height: 8px; }
-.srv:hover::before { height: 20px; }
+body.mouse .srv:hover::before { height: 20px; }
 .srv.sel::before { height: 32px; }
 .srv .ico svg { width: 22px; height: 22px; }
 .srv .acr { font-size: 12px; }
@@ -1528,7 +1734,7 @@ body:not(.focused) [data-cursor] { outline: none; }
   background: color-mix(in oklch, var(--fc) 22%, var(--bg-3, #222)); }
 .srv.fold .mini { width: 16px; height: 16px; object-fit: cover; opacity: .85; }
 .srv.fold .mini.acr { display: grid; place-items: center; font-size: 9px; background: var(--bg-2, #333); color: var(--text-3, #bbb); }
-body.focused .srv.fold[data-cursor] .mini, .srv.fold:hover .mini { opacity: 1; }
+body.focused .srv.fold[data-cursor] .mini, body.mouse .srv.fold:hover .mini { opacity: 1; }
 
 /* channels */
 .head { padding: 10px 12px 8px; color: var(--text-2, #ddd); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -1538,12 +1744,12 @@ body.focused .srv.fold[data-cursor] .mini, .srv.fold:hover .mini { opacity: 1; }
 .filter:focus, .filter:not(:placeholder-shown) { display: block; }
 .filter:focus { border-color: var(--border-hover, #888); }
 .cat { padding: 12px 12px 4px; color: var(--text-5, #666); font-size: 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cat:hover { color: var(--text-3, #bbb); }
+body.mouse .cat:hover { color: var(--text-3, #bbb); }
 .ch { display: flex; align-items: center; gap: 6px; margin: 1px 8px; padding: 3px 8px; padding-left: calc(8px + var(--depth, 0) * 14px);
   color: var(--text-4, #999); cursor: pointer; white-space: nowrap; transition: background var(--list-item-transition, .2s ease), color var(--list-item-transition, .2s ease); }
 .ch .pfx { color: var(--text-5, #666); width: 1ch; flex: none; text-align: center; }
 .ch .name { overflow: hidden; text-overflow: ellipsis; }
-.ch:hover { background: var(--hover); color: var(--text-3, #bbb); }
+body.mouse .ch:hover { background: var(--hover); color: var(--text-3, #bbb); }
 .ch.unread { color: var(--text-1, #eee); font-weight: 500; }
 .ch.muted { color: var(--text-5, #666); }
 .ch.sel { background: var(--active); color: var(--text-1, #eee); }
@@ -1581,7 +1787,7 @@ kbd { font: inherit; font-size: 12px; padding: 0 6px; color: var(--text-1, #eee)
   border: 1px solid var(--border, #333); color: var(--text-4, #999); cursor: pointer;
   transition: background var(--list-item-transition, .2s ease), color var(--list-item-transition, .2s ease); }
 .tbtn svg { width: 15px; height: 15px; flex: none; }
-.tbtn:hover { background: var(--hover); color: var(--text-2, #ddd); }
+body.mouse .tbtn:hover { background: var(--hover); color: var(--text-2, #ddd); }
 .tbtn.danger { color: var(--accent-new, var(--red-2, #e66)); border-color: var(--accent-new, var(--red-2, #e66)); }
 .tbtn.slim { flex: none; padding: 2px 8px; }
 `;

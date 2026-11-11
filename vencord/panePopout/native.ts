@@ -8,7 +8,7 @@
  */
 
 import { execFileSync } from "child_process";
-import { IpcMainInvokeEvent, WebContents } from "electron";
+import { BrowserWindow, IpcMainInvokeEvent, WebContents } from "electron";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -92,6 +92,16 @@ export function readOmarchy(_: IpcMainInvokeEvent) {
     let colors = "";
     try { colors = fs.readFileSync(OMARCHY_COLORS, "utf8"); } catch { return null; }
     return { colors, font: omarchyFont() };
+}
+
+// Vesktop gives popouts a minimum size of 320x180. Tiled windows ignore that, but a floating
+// one can't be made smaller, so the narrow panes (nav is 92px) need it lifted. Only for our
+// pane windows, found by the title the plugin gives them.
+export function freePaneSize(_: IpcMainInvokeEvent, pane: unknown) {
+    if (typeof pane !== "string" || !/^(nav|channels|user)$/.test(pane)) return false;
+    const win = BrowserWindow.getAllWindows().find(w => !w.isDestroyed() && w.getTitle() === `Discord · ${pane}`);
+    win?.setMinimumSize(1, 1);
+    return !!win;
 }
 
 // Wake the renderer as soon as the helper drops a message, instead of waiting for its poll.

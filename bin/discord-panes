@@ -8,7 +8,10 @@ $XDG_RUNTIME_DIR/discord-panes/ (to-hypr/ for this helper, to-discord/ for the p
 
 usage:
   discord-panes toggle     split Discord into panes, or put it back together
+                           (opens Discord first if it isn't running)
   discord-panes split | dock
+  discord-panes client [discord|vesktop]
+                           choose which client `toggle` opens (asks if not given)
   discord-panes help       show / hide the plugin's keybinding cheat sheet
   discord-panes focus nav|channels|user|main
   discord-panes status     show what the helper knows
@@ -18,6 +21,7 @@ usage:
 import itertools
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -30,13 +34,20 @@ STATEFILE = os.path.join(RUN, "state.json")
 DIAG_FILE = os.path.join(RUN, "diag.json")
 
 PANES = ["nav", "channels", "user"]
-# Pane sizes in px. dwindle ignores window-rule sizes, so we resize after tiling.
+# Pane sizes in px. Neither dwindle nor scrolling uses window-rule sizes, so we resize after tiling.
 NAV_WIDTH = 92
 CHANNELS_WIDTH = 300
 USER_HEIGHT = 200  # the page inside a Discord popout is never shorter than 200px; a shorter window draws wrong
 # Hyprland window classes of the supported clients: Discord (BetterDiscord) and Vesktop (Vencord).
 # Run one of them at a time: both plugins read the same inbox.
 CLIENT_CLASSES = {"discord", "vesktop"}
+# What `toggle` can launch when no client is running: id -> (menu label, program).
+LAUNCHABLE = {
+    "discord": ("Discord (BetterDiscord)", "discord"),
+    "vesktop": ("Vesktop", "vesktop"),
+}
+CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "discord-panes")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 _seq = itertools.count()
 
@@ -124,7 +135,7 @@ def is_client(c):
 
 def workspace_layout(client):
     """The tiling layout of the client's workspace (Hyprland can set it per workspace), or
-    None if this Hyprland doesn't say. The panes are placed with dwindle's preselect."""
+    None if this Hyprland doesn't say. The panes can be tiled on dwindle and scrolling."""
     ws = (client.get("workspace") or {}).get("id")
     try:
         for w in json.loads(hyprctl("workspaces", "-j") or "[]"):
@@ -135,12 +146,75 @@ def workspace_layout(client):
     return None
 
 
+def current_layout(client):
+    """How Discord's window is laid out: "floating" when it floats (Omarchy's floating
+    workspace mode floats every window and leaves the workspace's tiled layout as it was),
+    else its workspace's tiled layout."""
+    if client.get("floating"):
+        return "floating"
+    return workspace_layout(client) or "dwindle"
+
+
 def focus(addr):
     dispatch(f'hl.dsp.focus({{ window = "address:{addr}" }})', "focuswindow", f"address:{addr}")
 
 
+def layoutmsg(msg):
+    dispatch(f'hl.dsp.layout("{msg}")', "layoutmsg", msg)
+
+
 def preselect(direction):
-    dispatch(f'hl.dsp.layout("preselect {direction}")', "layoutmsg", f"preselect {direction}")
+    layoutmsg(f"preselect {direction}")
+
+
+def option(name):
+    try:
+        return json.loads(hyprctl("getoption", name, "-j") or "{}")
+    except ValueError:
+        return {}
+
+
+def screen_span(client):
+    """Left edge and width (logical px) of the usable area of the client's monitor."""
+    try:
+        for m in json.loads(hyprctl("monitors", "-j") or "[]"):
+            if m.get("id") == client.get("monitor"):
+                left, _, right, _ = (m.get("reserved") or [0, 0, 0, 0])[:4]
+                width = (m["height"] if m.get("transform", 0) % 2 else m["width"]) / (m.get("scale") or 1)
+                return m["x"] + left, width - left - right
+    except (ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def gaps(name):
+    """A gaps option as [top, right, bottom, left]."""
+    try:
+        g = [float(x) for x in str(option(name).get("css", "0")).split()]
+    except ValueError:
+        g = [0.0]
+    return (g * 4)[:4] if len(g) == 1 else (g + [0.0] * 4)[:4]
+
+
+def scrolling_frac(client, px):
+    """The scrolling layout's column width (a fraction of the screen, as `colresize` takes
+    it) for a window `px` wide: a column is that fraction of the screen inside the outer
+    gaps, and the window is the column minus the inner gaps."""
+    span = screen_span(client)
+    if not span:
+        return None
+    go, gi = gaps("general:gaps_out"), gaps("general:gaps_in")
+    avail = span[1] - go[1] - go[3]
+    return min(1.0, (px + gi[1] + gi[3]) / avail) if avail > 0 else None
+
+
+def set_floating(addr):
+    dispatch(f'hl.dsp.window.float({{ window = "address:{addr}", action = "on" }})', "setfloating", f"address:{addr}")
+
+
+def move_to(addr, x, y):
+    dispatch(f'hl.dsp.window.move({{ window = "address:{addr}", x = {int(x)}, y = {int(y)}, relative = false }})',
+             "movewindowpixel", f"exact {int(x)} {int(y)},address:{addr}")
 
 
 def resize(addr, w, h):
@@ -201,11 +275,13 @@ def find_main(state, cs):
 # ---------------------------------------------------------------------------
 # actions
 # ---------------------------------------------------------------------------
-def open_pane(name, anchor, direction):
-    """Focus `anchor`, preselect where dwindle should put the next window, ask the
-    plugin to open the pane, and wait for the new window to appear."""
+def open_pane(name, anchor, direction=None):
+    """Focus `anchor`, preselect where dwindle should put the next window (scrolling
+    always opens it as a new column right of the focused one), ask the plugin to open
+    the pane, and wait for the new window to appear."""
     focus(anchor)
-    preselect(direction)
+    if direction:
+        preselect(direction)
     before = {c["address"] for c in clients()}
     post(TO_DISCORD, {"action": "open", "pane": name})
     deadline = time.time() + 8
@@ -226,15 +302,36 @@ def split(state):
     if not main:
         notify("Discord isn't running")
         return
-    layout = workspace_layout(main)
-    if layout and layout != "dwindle":
-        notify(f"Discord's workspace uses the {layout} layout; the panes need dwindle "
+    layout = current_layout(main)
+    if layout not in ("dwindle", "scrolling", "floating"):
+        notify(f"Discord's workspace uses the {layout} layout; the panes need dwindle, scrolling or floating "
                "(on Omarchy, SUPER+L cycles the workspace layout)")
         return
-    state = {"main": main["address"], "panes": {}}
+    if layout == "scrolling" and option("scrolling:direction").get("str", "right") != "right":
+        notify("the panes need the scrolling layout to scroll right (scrolling:direction)")
+        return
+    state = {"main": main["address"], "panes": {}, "layout": layout}
+    if layout == "scrolling":
+        # main's column width, to give back on dock. A lone window fills the screen whatever
+        # its column width (fullscreen_on_one_column), so then it's the default width.
+        alone = not any(c["address"] != main["address"] and not c.get("floating")
+                        and c.get("workspace", {}).get("id") == main.get("workspace", {}).get("id") for c in cs)
+        state["main_frac"] = (option("scrolling:column_width").get("float") if alone
+                              else scrolling_frac(main, main["size"][0]))
     save_state(state)
-    # Target layout (dwindle):  nav | channels / user | main (channel + chat + input)
-    for name, anchor, direction in (("nav", "main", "l"), ("channels", "main", "l"), ("user", "channels", "d")):
+    # Target layout:  nav | channels / user | main (channel + chat + input)
+    if layout == "dwindle":
+        steps = (("nav", "main", "l", None), ("channels", "main", "l", None), ("user", "channels", "d", None))
+    elif layout == "floating":
+        # the panes float too, attached to Discord's left side (see place_floating)
+        state["main_rect"] = main["at"] + main["size"]
+        steps = (("nav", "main", None, "float"), ("channels", "main", None, "float"), ("user", "main", None, "float"))
+    else:
+        # scrolling opens each window as a new column right of the focused one: nav lands
+        # right of main and swaps left of it, channels lands between them, and user's
+        # column is pulled into channels' (consume takes the next column's window).
+        steps = (("nav", "main", None, "swapcol l"), ("channels", "nav", None, None), ("user", "channels", None, "consume"))
+    for name, anchor, direction, after in steps:
         anchor_addr = state["main"] if anchor == "main" else state["panes"].get(anchor)
         if not anchor_addr:
             break
@@ -244,8 +341,22 @@ def split(state):
             break
         state["panes"][name] = addr
         save_state(state)
+        if after == "float":
+            if not next((c for c in clients() if c["address"] == addr), {}).get("floating"):
+                set_floating(addr)
+        elif after == "consume":
+            consume_into(anchor_addr, addr)
+        elif after:
+            layoutmsg(after)
 
-    size_panes(state)
+    if layout == "floating":
+        place_floating(state, center=True)
+        save_state(state)
+        _float_settle[0] = time.monotonic() + 4
+    else:
+        size_panes(state)
+    if layout == "scrolling":
+        fit_scrolling(state, size_main=True)
     send_geometry(state, force=True)
     focus(state["main"])
     post(TO_DISCORD, {"action": "focus-input"})
@@ -268,6 +379,138 @@ def size_panes(state):
             gap = us["at"][1] - (ch["at"][1] + ch["size"][1])
             height = column - gap - USER_HEIGHT
         resize(p["channels"], CHANNELS_WIDTH, height)
+
+
+def consume_into(column_addr, addr):
+    """Scrolling: pull the window `addr` (the next column) into `column_addr`'s column.
+    Retried once: right after a window opens, focus sometimes hasn't landed yet."""
+    for _ in range(2):
+        focus(column_addr)
+        time.sleep(0.05)
+        layoutmsg("consume")
+        time.sleep(0.15)
+        geo = {c["address"]: c for c in clients()}
+        if column_addr in geo and addr in geo and geo[column_addr]["at"][0] == geo[addr]["at"][0]:
+            return
+
+
+def floating_gap():
+    """The space between two tiled windows (inner gaps plus borders), used between the
+    floating panes too so they look the same as tiled ones."""
+    gi = gaps("general:gaps_in")
+    return gi[1] + gi[3] + 2 * int(option("general:border_size").get("int", 0) or 0)
+
+
+def place_floating(state, center=False):
+    """Floating: nav | channels over user, attached to the left of Discord's window and as
+    tall as it. With `center`, also move Discord so the whole group is centred where
+    Discord was (and fits on screen, narrowing Discord if it must)."""
+    p = state.get("panes", {})
+    geo = {c["address"]: c for c in clients()}
+    main = geo.get(state.get("main"))
+    if not main:
+        return
+    gap = floating_gap()
+    panes_w = NAV_WIDTH + CHANNELS_WIDTH + 2 * gap
+    (x, y), (w, h) = main["at"], main["size"]
+    if center:
+        span = screen_span(main)
+        if span:
+            left, width = span
+            margin = gaps("general:gaps_out")[3] + gap / 2
+            w = min(w, width - 2 * margin - panes_w)
+            gx = x + main["size"][0] / 2 - (panes_w + w) / 2  # centre the group on Discord's old centre
+            gx = max(left + margin, min(gx, left + width - margin - panes_w - w))
+            x = int(gx + panes_w)
+            if (x, w) != (main["at"][0], main["size"][0]):
+                resize(main["address"], w, h)
+                move_to(main["address"], x, y)
+        state["placed_rect"] = [x, y, w, h]
+    h_user = min(USER_HEIGHT, max(0, h - gap - 200))
+    rects = {
+        "nav": (x - panes_w, y, NAV_WIDTH, h),
+        "channels": (x - gap - CHANNELS_WIDTH, y, CHANNELS_WIDTH, h - gap - h_user),
+        "user": (x - gap - CHANNELS_WIDTH, y + h - h_user, CHANNELS_WIDTH, h_user),
+    }
+    for name, (rx, ry, rw, rh) in rects.items():
+        c = geo.get(p.get(name))
+        if not c:
+            continue
+        if list(c["size"]) != [rw, rh]:
+            resize(c["address"], rw, rh)
+        if list(c["at"]) != [rx, ry]:
+            move_to(c["address"], rx, ry)
+    _float_main[state.get("main")] = [x, y, w, h]
+
+
+_float_main = {}  # Discord's window rect the floating panes were last attached to
+_float_settle = [0.0]  # until then, keep re-placing: the panes may only now be allowed their size
+
+
+def follow_floating(state):
+    """Floating: when Discord's window moves or is resized, bring the panes along."""
+    if state.get("layout") != "floating" or not state.get("panes"):
+        return
+    main = next((c for c in clients() if c["address"] == state.get("main")), None)
+    if not main or not main.get("floating"):
+        return
+    if _float_main.get(main["address"]) != main["at"] + main["size"] or time.monotonic() < _float_settle[0]:
+        place_floating(state)
+
+
+def fit_scrolling(state, size_main=False):
+    """On the scrolling layout, make nav | channels/user | main fill the screen (main's
+    column takes the width the panes leave) and slide the tape so all of it is in view.
+    Hyprland only scrolls far enough to show the focused column, which can leave the panes
+    off-screen."""
+    p = state.get("panes", {})
+    geo = {c["address"]: c for c in clients()}
+    nav, chan, main = geo.get(p.get("nav")), geo.get(p.get("channels")), geo.get(state.get("main"))
+    if not nav or not main:
+        return
+    span = screen_span(main)
+    if not span:
+        return
+    left, width = span
+    if size_main:
+        # (an exact pixel resize of the last column only moves one of its edges halfway, so
+        # set main's column width as a fraction, which is exact)
+        # (from the widths size_panes() just set: Hyprland may not report them yet)
+        panes = scrolling_frac(main, NAV_WIDTH) + (scrolling_frac(main, CHANNELS_WIDTH) if chan else 0)
+        focus(main["address"])
+        layoutmsg(f"colresize {max(0.1, 1 - panes):.4f}")
+        time.sleep(0.15)
+        geo = {c["address"]: c for c in clients()}
+        nav, main = geo.get(nav["address"]), geo.get(main["address"])
+        if not nav or not main:
+            return
+    if main["at"][0] + main["size"][0] - nav["at"][0] > width:
+        return  # doesn't fit on screen anyway; leave the scrolling to the user
+    # put nav's column at the left edge, inner gap and border included
+    margin = gaps("general:gaps_in")[3] + int(option("general:border_size").get("int", 0) or 0)
+    delta = int(round(left + margin - nav["at"][0]))
+    if abs(delta) > 1:
+        layoutmsg(f"move {delta:+d}")
+
+
+def restore_main(state):
+    """After the panes close, put main back: its old column width on the scrolling layout,
+    its old place (unless it has been moved since) when floating."""
+    if state.get("layout") == "floating" and state.get("main_rect") and state.get("placed_rect"):
+        main = next((c for c in clients() if c["address"] == state.get("main")), None)
+        if main and main.get("floating") and main["at"] + main["size"] == state["placed_rect"]:
+            x, y, w, h = state["main_rect"]
+            resize(main["address"], w, h)
+            move_to(main["address"], x, y)
+        return
+    frac = state.get("main_frac")
+    if state.get("layout") != "scrolling" or not frac:
+        return
+    time.sleep(0.3)  # let the pane columns go first
+    main = next((c for c in clients() if c["address"] == state.get("main")), None)
+    if main and workspace_layout(main) == "scrolling":  # (not if the workspace just left scrolling)
+        focus(state["main"])
+        layoutmsg(f"colresize {frac:.4f}")
 
 
 _last_geometry = {}
@@ -293,8 +536,8 @@ def send_geometry(state, force=False):
 def dock(state):
     post(TO_DISCORD, {"action": "dock"})
     main = state.get("main")
-    state = {"main": None, "panes": {}}
-    save_state(state)
+    save_state({"main": None, "panes": {}})
+    restore_main(state)
     if main:
         time.sleep(0.2)
         focus(main)
@@ -311,6 +554,8 @@ def handle(msg):
         dock(state)
     elif action == "docked":  # the plugin closed the panes itself (e.g. SUPER+W on one)
         save_state({"main": state.get("main"), "panes": {}})
+        if state.get("panes"):
+            restore_main(state)
     elif action == "focus":
         pane = msg.get("pane")
         addr = state.get("main") if pane == "main" else state.get("panes", {}).get(pane)
@@ -361,6 +606,138 @@ def toggle_help(state):
     save_state(state)
 
 
+def follow_layout(state):
+    """If Discord's workspace changed layout while split (e.g. SUPER+L on Omarchy), Hyprland
+    reflows the panes its own way; put Discord back together and split it again for the
+    new layout."""
+    if not state.get("panes"):
+        return
+    cs = clients()
+    main = next((c for c in cs if c["address"] == state.get("main")), None)
+    old = live_panes(state, cs)
+    if not main or not old:
+        return
+    layout = current_layout(main)
+    if layout == state.get("layout", "dwindle"):
+        return
+    log(f"layout changed to {layout}; splitting again")
+    dock(state)
+    deadline = time.time() + 4  # wait for the old pane windows to go
+    while time.time() < deadline and live_panes({"panes": old}):
+        time.sleep(0.1)
+    split(load_state())
+
+
+def keep_in_view(state, last_active):
+    """Scrolling layout: when focus comes (back) to Discord, scroll the panes into view with
+    it. Only on a change of focus, so scrolling the tape by hand while in Discord sticks."""
+    if state.get("layout") != "scrolling" or not state.get("panes"):
+        return None
+    try:
+        active = json.loads(hyprctl("activewindow", "-j") or "{}").get("address")
+    except ValueError:
+        return last_active
+    ours = {state.get("main"), *state["panes"].values()}
+    if active in ours and last_active not in ours:
+        fit_scrolling(state)
+    return active
+
+
+# ---------------------------------------------------------------------------
+# launching the client (SUPER+ALT+D while no Discord is open)
+# ---------------------------------------------------------------------------
+def load_config():
+    try:
+        with open(CONFIG_FILE) as f:
+            cfg = json.load(f)
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(cfg):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=1)
+    os.replace(tmp, CONFIG_FILE)
+
+
+def installed_clients():
+    return [cid for cid, (_, prog) in LAUNCHABLE.items() if shutil.which(prog)]
+
+
+def pick(prompt, labels):
+    """Let the user pick one of `labels` from a menu: Omarchy's own menu, else the usual
+    dmenu-style launchers. The chosen label, None if dismissed, or False if there's no menu."""
+    menus = []
+    if shutil.which("omarchy-menu-select"):
+        menus.append(["omarchy-menu-select", prompt, *labels, "--", "--width", "420"])
+    stdin_menus = (["walker", "--dmenu", "--placeholder", prompt], ["fuzzel", "--dmenu", "--prompt", prompt + " "],
+                   ["rofi", "-dmenu", "-i", "-p", prompt], ["wofi", "--dmenu", "--prompt", prompt])
+    menus += [m for m in stdin_menus if shutil.which(m[0])]
+    for cmd in menus:
+        try:
+            r = subprocess.run(cmd, input="\n".join(labels) + "\n", capture_output=True, text=True)
+        except OSError:
+            continue
+        if r.returncode == 2 and cmd[0] == "omarchy-menu-select":
+            continue  # the Omarchy shell isn't running; try the next menu
+        choice = r.stdout.strip()
+        return choice if choice in labels else None
+    return False
+
+
+def choose_client(ask=False):
+    """The client `toggle` launches: the saved choice; else the only one installed; else
+    ask once and remember the answer. None if there's nothing to launch (or the user
+    dismissed the menu)."""
+    installed = installed_clients()
+    saved = load_config().get("client")
+    if not ask and saved in installed:
+        return saved
+    if not installed:
+        notify("neither Discord nor Vesktop is installed")
+        return None
+    if len(installed) == 1 and not ask:
+        return installed[0]  # (not saved: if a second client is installed later, ask then)
+    labels = [LAUNCHABLE[cid][0] for cid in installed]
+    choice = pick("Open Discord with", labels)
+    if choice is False:
+        notify(f"no menu to choose a client with; opening {labels[0]}. "
+               "Run `discord-panes client <name>` to change it.")
+        return installed[0]
+    if not choice:
+        return None
+    cid = installed[labels.index(choice)]
+    save_config({**load_config(), "client": cid})
+    return cid
+
+
+def launch_client(cid):
+    prog = shutil.which(LAUNCHABLE[cid][1])
+    cmd = ["uwsm-app", "--", prog] if shutil.which("uwsm-app") else [prog]
+    subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def client_command(argv):
+    if argv:
+        cid = argv[0].lower()
+        if cid not in LAUNCHABLE:
+            print(f"unknown client {argv[0]!r}; choose one of: {', '.join(LAUNCHABLE)}", file=sys.stderr)
+            return 2
+        if not shutil.which(LAUNCHABLE[cid][1]):
+            print(f"note: {LAUNCHABLE[cid][1]} isn't on your PATH", file=sys.stderr)
+        save_config({**load_config(), "client": cid})
+    else:
+        cid = choose_client(ask=True)
+        if not cid:
+            return 1
+    print(f"SUPER+ALT+D opens {LAUNCHABLE[cid][0]} when Discord isn't running")
+    return 0
+
+
 def daemon_pid():
     try:
         with open(PIDFILE) as f:
@@ -387,7 +764,8 @@ def daemon():
                 os.unlink(os.path.join(TO_HYPR, name))
         except (ValueError, OSError):
             pass
-    last_geo_check = 0.0
+    last_geo_check = last_float_check = 0.0
+    last_active = None
     try:
         while True:
             for msg in take(TO_HYPR):
@@ -396,10 +774,19 @@ def daemon():
                 except Exception as e:  # keep the helper alive whatever happens
                     log(f"error handling {msg}: {e!r}")
             now = time.monotonic()
+            if now - last_float_check > 0.1:  # floating panes follow Discord's window closely
+                last_float_check = now
+                try:
+                    follow_floating(load_state())
+                except Exception as e:
+                    log(f"floating follow failed: {e!r}")
             if now - last_geo_check > 0.5:  # follow manual resizes while split
                 last_geo_check = now
                 try:
-                    send_geometry(load_state())
+                    follow_layout(load_state())
+                    state = load_state()
+                    send_geometry(state)
+                    last_active = keep_in_view(state, last_active)
                 except Exception as e:
                     log(f"geometry check failed: {e!r}")
             time.sleep(0.05)
@@ -426,9 +813,18 @@ def main(argv):
     cmd = argv[1] if len(argv) > 1 else "toggle"
     if cmd == "daemon":
         daemon()
+    elif cmd == "toggle" and not any(is_client(c) for c in clients()):
+        # Nothing to split: open Discord instead. (A client hidden to the tray has no
+        # window; launching it again just brings the running one back.)
+        ensure_daemon()
+        cid = choose_client()
+        if cid:
+            launch_client(cid)
     elif cmd in ("toggle", "split", "dock"):
         ensure_daemon()
         post(TO_HYPR, {"action": cmd})
+    elif cmd == "client":
+        return client_command(argv[2:])
     elif cmd == "help":
         ensure_daemon()
         post(TO_HYPR, {"action": "help"})
@@ -436,7 +832,8 @@ def main(argv):
         post(TO_HYPR, {"action": "focus", "pane": argv[2]})
     elif cmd == "status":
         state = load_state()
-        print(json.dumps({"daemon_pid": daemon_pid(), "state": state, "live": live_panes(state)}, indent=1))
+        print(json.dumps({"daemon_pid": daemon_pid(), "client": load_config().get("client"),
+                          "state": state, "live": live_panes(state)}, indent=1))
     elif cmd == "diag":
         before = os.path.getmtime(DIAG_FILE) if os.path.exists(DIAG_FILE) else 0
         post(TO_DISCORD, {"action": "diag"})

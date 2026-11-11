@@ -115,9 +115,12 @@ echo "helper -> $bindir/discord-panes"
 # Keybinds: on a Lua-config Hyprland (e.g. Omarchy) append them once, after a backup.
 # Classic hyprland.conf setups get told what to add instead.
 if [[ -f "$bindings" ]] && grep -q "o\.bind" "$bindings"; then
-  if ! grep -q "discord-panes toggle" "$bindings"; then
+  add=()
+  grep -q "discord-panes toggle" "$bindings" || add+=("$here/hypr/bindings.lua")
+  grep -q "discord_panes_tab" "$bindings" || add+=("$here/hypr/alt-tab.lua") # Alt+Tab left to right
+  if ((${#add[@]})); then
     cp "$bindings" "$bindings.bak.$(date +%s)"
-    { echo; cat "$here/hypr/bindings.lua"; } >> "$bindings"
+    for f in "${add[@]}"; do { echo; cat "$f"; } >> "$bindings"; done
     echo "keybinds added to $bindings"
   fi
 elif ! grep -rqs "discord-panes toggle" "$config/hypr/"; then
