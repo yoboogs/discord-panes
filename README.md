@@ -7,11 +7,7 @@ channel list and your user panel each become their own Hyprland window, tiled
 next to the chat like any other app, and you move between them with your usual
 window keys:
 
-```
- nav | channels | chat
-     |----------|
-     | user     |
-```
+![Discord split into nav, channels and user panes beside the chat, moved through from the keyboard](docs/demo.gif)
 
 It's a plugin for [BetterDiscord](https://betterdiscord.app) or
 [Vesktop](https://vesktop.dev), plus a small helper that tiles the windows. It
